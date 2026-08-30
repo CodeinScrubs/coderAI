@@ -963,7 +963,100 @@ p, .editor-head span { color: var(--muted); font-size: 11px; }
   line-height: 1.6;
 }
 
-.composer { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 8px; border-top: 1px solid var(--line); align-items: end; background: var(--panel); }
+.composer-container {
+  position: relative;
+  width: 100%;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.skill-autocomplete-popover {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 8px;
+  right: 8px;
+  max-height: 250px;
+  overflow-y: auto;
+  background: #202022;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  padding: 5px;
+  gap: 2px;
+}
+.skill-autocomplete-popover[hidden] {
+  display: none !important;
+}
+
+.skill-autocomplete-header {
+  padding: 5px 8px 4px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.skill-autocomplete-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  color: var(--text);
+  text-align: left;
+  border: 1px solid transparent;
+  background: transparent;
+  transition: background .12s ease, border-color .12s ease;
+  user-select: none;
+}
+.skill-autocomplete-item:hover,
+.skill-autocomplete-item.active {
+  background: #2a2d2e;
+  border-color: var(--accent-dim);
+}
+
+.skill-autocomplete-name {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-dim);
+  flex-shrink: 0;
+}
+.skill-autocomplete-desc {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+}
+.skill-autocomplete-badge {
+  font-size: 9.5px;
+  font-family: var(--mono);
+  padding: 1px 5px;
+  border-radius: var(--r-sm);
+  background: var(--panel-3);
+  color: var(--text-dim);
+  border: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.skill-autocomplete-empty {
+  padding: 10px 12px;
+  color: var(--muted);
+  font-size: 11.5px;
+  text-align: center;
+}
+
+.composer { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 8px; border-top: 0; align-items: end; background: transparent; }
 .composer textarea { height: 56px; min-height: 44px; max-height: 220px; direction: auto; background: #1b1b1c; }
 .composer button { height: 100%; min-height: 44px; padding: 0 16px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 

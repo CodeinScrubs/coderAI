@@ -1960,7 +1960,168 @@ function initPanelResizersAndToggles() {
   });
 }
 
+function setupSkillSlashAutocomplete() {
+  const input = $("promptInput");
+  const popover = $("skillAutocomplete");
+  if (!input || !popover) return;
+
+  let selectedIndex = 0;
+  let activeMatches = [];
+  let slashRange = null; // { start, end, query }
+
+  function getAvailableSkills() {
+    return (state.data?.skills || []).filter((s) => !s.disabled);
+  }
+
+  function getSlashContext() {
+    const text = input.value;
+    const caret = input.selectionStart;
+    if (caret === undefined || caret === null) return null;
+
+    const beforeCaret = text.slice(0, caret);
+    const match = beforeCaret.match(/(?:^|\s)\/([a-zA-Z0-9_\-]*)$/);
+    if (!match) return null;
+
+    const slashIndex = beforeCaret.lastIndexOf("/");
+    return {
+      start: slashIndex,
+      end: caret,
+      query: match[1].toLowerCase(),
+    };
+  }
+
+  function renderAutocompleteList() {
+    const ctx = getSlashContext();
+    if (!ctx) {
+      closeAutocomplete();
+      return;
+    }
+
+    slashRange = ctx;
+    const allSkills = getAvailableSkills();
+    activeMatches = allSkills.filter((s) => {
+      if (!ctx.query) return true;
+      return (
+        s.name.toLowerCase().includes(ctx.query) ||
+        (s.description && s.description.toLowerCase().includes(ctx.query)) ||
+        (s.category && s.category.toLowerCase().includes(ctx.query))
+      );
+    });
+
+    if (!activeMatches.length) {
+      popover.innerHTML = `
+        <div class="skill-autocomplete-header">Skills (0)</div>
+        <div class="skill-autocomplete-empty">No skills matching "/${escapeHtml(ctx.query)}"</div>
+      `;
+      popover.hidden = false;
+      return;
+    }
+
+    if (selectedIndex >= activeMatches.length) {
+      selectedIndex = 0;
+    } else if (selectedIndex < 0) {
+      selectedIndex = activeMatches.length - 1;
+    }
+
+    popover.innerHTML = `
+      <div class="skill-autocomplete-header">
+        <span>Skills (${activeMatches.length})</span>
+        <span>↑↓ Navigate · Enter / Click to select</span>
+      </div>
+      ${activeMatches.map((skill, index) => `
+        <div class="skill-autocomplete-item ${index === selectedIndex ? "active" : ""}" data-index="${index}" data-skill="${escapeHtml(skill.name)}">
+          <span class="skill-autocomplete-name">/${escapeHtml(skill.name)}</span>
+          <span class="skill-autocomplete-desc">${escapeHtml(skill.description || "")}</span>
+          <span class="skill-autocomplete-badge">${escapeHtml(skill.category || "skill")}</span>
+        </div>
+      `).join("")}
+    `;
+    popover.hidden = false;
+
+    const activeEl = popover.querySelector(`.skill-autocomplete-item[data-index="${selectedIndex}"]`);
+    if (activeEl) {
+      activeEl.scrollIntoView({ block: "nearest" });
+    }
+
+    popover.querySelectorAll(".skill-autocomplete-item").forEach((item) => {
+      const idx = parseInt(item.dataset.index, 10);
+      item.addEventListener("mouseenter", () => {
+        selectedIndex = idx;
+        popover.querySelectorAll(".skill-autocomplete-item").forEach((el, i) => {
+          el.classList.toggle("active", i === selectedIndex);
+        });
+      });
+      item.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        selectSkill(activeMatches[idx]);
+      });
+    });
+  }
+
+  function selectSkill(skill) {
+    if (!skill || !slashRange) return;
+    const text = input.value;
+    const before = text.slice(0, slashRange.start);
+    const after = text.slice(slashRange.end);
+    const insertion = `/${skill.name} `;
+    input.value = before + insertion + after;
+    const newCaret = before.length + insertion.length;
+    input.focus();
+    input.setSelectionRange(newCaret, newCaret);
+    closeAutocomplete();
+    updateTokenUsage();
+  }
+
+  function closeAutocomplete() {
+    popover.hidden = true;
+    activeMatches = [];
+    slashRange = null;
+    selectedIndex = 0;
+  }
+
+  input.addEventListener("input", () => {
+    renderAutocompleteList();
+  });
+
+  input.addEventListener("click", () => {
+    renderAutocompleteList();
+  });
+
+  input.addEventListener("blur", () => {
+    setTimeout(() => {
+      if (!popover.matches(":hover")) {
+        closeAutocomplete();
+      }
+    }, 150);
+  });
+
+  input.addEventListener("keydown", (e) => {
+    if (popover.hidden || !activeMatches.length) {
+      return;
+    }
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      selectedIndex = (selectedIndex + 1) % activeMatches.length;
+      renderAutocompleteList();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      selectedIndex = (selectedIndex - 1 + activeMatches.length) % activeMatches.length;
+      renderAutocompleteList();
+    } else if (e.key === "Enter" || e.key === "Tab") {
+      if (activeMatches[selectedIndex]) {
+        e.preventDefault();
+        selectSkill(activeMatches[selectedIndex]);
+      }
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      closeAutocomplete();
+    }
+  });
+}
+
 initPanelResizersAndToggles();
+setupSkillSlashAutocomplete();
 installEditorMetricStyles();
 updateGitAuthPanel();
 refresh().catch((err) => {

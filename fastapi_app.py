@@ -95,6 +95,10 @@ def create_app() -> FastAPI:
     async def get_prompts():
         return web_app._prompt_payload()
 
+    @app.get("/api/skills")
+    async def get_skills():
+        return {"skills": web_app._skills_payload()}
+
     @app.get("/api/skills/diagnostics")
     async def get_skills_diagnostics():
         return web_app._skills_diagnostics()

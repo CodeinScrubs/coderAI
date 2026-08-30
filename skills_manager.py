@@ -151,26 +151,22 @@ class SkillsManager:
 
     def detect_skill_commands(self, message: str) -> list[Skill]:
         """
-        Extract all known slash commands from the beginning of a message.
-        Example: /tdd /diagnosing-bugs fix the login flow.
+        Extract all known slash commands from anywhere in a message.
+        Example: /tdd /diagnosing-bugs fix the login flow OR 'use /git_operations to commit'.
         """
         found: list[Skill] = []
-        for token in message.strip().split():
-            if not token.startswith("/"):
-                break
-            name = token[1:]
+        for match in re.finditer(r"(?:^|\s)/([a-zA-Z0-9_\-]+)", message):
+            name = match.group(1)
             skill = self._skills.get(name)
             if skill and skill not in found:
                 found.append(skill)
-            if not skill:
-                break
         return found
 
     def strip_commands(self, message: str) -> str:
         """Remove all known slash commands from a message."""
         cleaned = message
         for skill in self.detect_skill_commands(message):
-            cleaned = re.sub(rf"(^|\s)/{re.escape(skill.name)}(?=\s|$)", " ", cleaned)
+            cleaned = re.sub(rf"(^|\s)/{re.escape(skill.name)}(?=\s|$|[.,;?!:()\[\]{{}}])", " ", cleaned)
         return re.sub(r"\s+", " ", cleaned).strip()
 
     def select_relevant_skills(self, message: str, pinned: list[str] | None = None, limit: int = 3) -> list[SkillSelection]:

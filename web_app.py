@@ -1847,6 +1847,20 @@ def _run_agent_stream(prompt: str, write_event, active_context: dict | None = No
     })
 
 
+def _skills_payload() -> list[dict]:
+    return [
+        {
+            "name": s.name,
+            "slash_command": f"/{s.name}",
+            "description": s.description,
+            "category": s.category,
+            "triggers": s.triggers or [],
+            "disabled": s.disable_model_invocation,
+        }
+        for s in sm.all()
+    ]
+
+
 def _client_state(session_id: str | None = None) -> dict:
     st = get_session_state(session_id)
     models_payload = _available_models()
@@ -1857,15 +1871,7 @@ def _client_state(session_id: str | None = None) -> dict:
         "tools_log": st["tools_log"],
         "generated_artifact": st.get("generated_artifact"),
         "selected_skills": st["selected_skills"],
-        "skills": [
-            {
-                "name": s.name,
-                "description": s.description,
-                "category": s.category,
-                "disabled": s.disable_model_invocation,
-            }
-            for s in sm.all()
-        ],
+        "skills": _skills_payload(),
         "skill_usage": _skill_usage_payload(),
         "settings": {
             "conn_mode": st["conn_mode"],
@@ -1944,6 +1950,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/prompts":
             _send_json(self, _prompt_payload())
+            return
+        if path == "/api/skills":
+            _send_json(self, {"skills": _skills_payload()})
             return
         if path == "/api/skills/diagnostics":
             _send_json(self, _skills_diagnostics())
