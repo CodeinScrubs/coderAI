@@ -80,6 +80,14 @@ button.primary {
 }
 button.primary:hover { background: #0e86d4; }
 
+button.danger {
+  background: rgba(244, 135, 113, .18);
+  border-color: var(--danger);
+  color: var(--danger);
+  font-weight: 600;
+}
+button.danger:hover { background: rgba(244, 135, 113, .32); }
+
 button.ghost {
   background: transparent;
   border-color: var(--line);
@@ -419,22 +427,6 @@ body.utility-mode .agent-panel { grid-column: 2; border-left: 1px solid var(--li
 .agent-panel { border-right: 0; border-left: 1px solid var(--line); }
 .editor-panel { background: var(--editor); }
 .workspace-panel { position: relative; }
-body.workspace-locked .workspace-panel::before {
-  content: "Workspace locked while the agent is running";
-  position: absolute;
-  inset: 0;
-  z-index: 20;
-  display: grid;
-  place-items: center;
-  padding: 18px;
-  text-align: center;
-  color: var(--text-dim);
-  font-size: 12px;
-  font-weight: 600;
-  background: rgba(20, 22, 27, .68);
-  backdrop-filter: blur(2px);
-}
-body.workspace-locked .workspace-panel { box-shadow: inset 0 0 0 1px var(--accent-dim); }
 
 .workspace-panel { display: grid; grid-template-rows: auto auto auto auto 1fr; }
 .agent-panel { display: grid; grid-template-rows: auto 1fr auto; }
@@ -830,7 +822,7 @@ p, .editor-head span { color: var(--muted); font-size: 11px; }
 
 .composer { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 8px; border-top: 1px solid var(--line); align-items: end; background: var(--panel); }
 .composer textarea { height: 56px; min-height: 44px; max-height: 220px; direction: auto; background: #1b1b1c; }
-.composer button[type="submit"] { height: 100%; padding: 0 16px; }
+.composer button { height: 100%; min-height: 44px; padding: 0 16px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 
 .statusbar {
   grid-row: 4;
@@ -873,11 +865,10 @@ p, .editor-head span { color: var(--muted); font-size: 11px; }
 
 /* ── Loading ───────────────────────────────────────────────────── */
 
-.loading .composer button, .loading #scanBtn, .loading #attachFile { opacity: .6; pointer-events: none; }
-body.workspace-locked .workspace-panel button, body.workspace-locked .workspace-panel input,
-body.workspace-locked .workspace-panel textarea, body.workspace-locked .workspace-panel select { opacity: .55; }
+.loading .composer button:not(#stopBtn), .loading #scanBtn, .loading #attachFile { opacity: .6; pointer-events: none; }
+.loading .composer #stopBtn { opacity: 1; pointer-events: auto; cursor: pointer; }
 
-.loading-overlay { position: fixed; inset: auto 18px 18px auto; z-index: 50; display: none; pointer-events: none; }
+.loading-overlay { position: fixed; right: 18px; bottom: 84px; z-index: 50; display: none; pointer-events: none; }
 body.loading .loading-overlay { display: block; }
 .loader-card {
   width: 270px;

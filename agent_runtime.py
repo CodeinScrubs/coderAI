@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from config import MODE_CUSTOM, MODE_LOCAL
+from tool_parser import extract_fallback_tool_calls_from_text, repair_json_tool_arguments
 
 
 @dataclass
@@ -66,6 +67,10 @@ class LangChainRuntime:
         aggregate = None
 
         for chunk in model.bind_tools(tools).stream(messages):
+            from tools import is_execution_cancelled
+            if is_execution_cancelled():
+                write_event({"type": "cancelled", "message": "Stream cancelled by user."})
+                break
             aggregate = chunk if aggregate is None else aggregate + chunk
             content = self._string_content(getattr(chunk, "content", ""))
             if content:
@@ -127,12 +132,7 @@ class LangChainRuntime:
                 tool_calls = []
                 for tc_index, call in enumerate(item.get("tool_calls") or []):
                     fn = call.get("function") or {}
-                    args = fn.get("arguments", {})
-                    if isinstance(args, str):
-                        try:
-                            args = json.loads(args)
-                        except json.JSONDecodeError:
-                            args = {}
+                    args = repair_json_tool_arguments(fn.get("arguments", {}))
                     tool_calls.append({
                         "name": fn.get("name", ""),
                         "args": args,
@@ -163,8 +163,22 @@ class LangChainRuntime:
                 "id": call.get("id") or f"call_{index}",
                 "type": "function",
                 "name": call.get("name", ""),
-                "arguments": call.get("args") or {},
+                "arguments": repair_json_tool_arguments(call.get("args") or {}),
             })
+
+        content_str = self._string_content(getattr(response, "content", ""))
+
+        if not tool_calls and content_str:
+            from tools import TOOL_SCHEMAS
+            available_names = [s.get("function", {}).get("name") for s in TOOL_SCHEMAS if s.get("function", {}).get("name")]
+            fallback_calls = extract_fallback_tool_calls_from_text(content_str, available_names)
+            for idx, fc in enumerate(fallback_calls):
+                tool_calls.append({
+                    "id": f"call_fb_{idx}",
+                    "type": "function",
+                    "name": fc["name"],
+                    "arguments": fc["arguments"],
+                })
 
         metadata = getattr(response, "response_metadata", None) or {}
         finish_reason = (
@@ -174,7 +188,7 @@ class LangChainRuntime:
             or ""
         )
         return {
-            "content": self._string_content(getattr(response, "content", "")),
+            "content": content_str,
             "thinking": self._extract_thinking(response),
             "tool_calls": tool_calls,
             "finish_reason": finish_reason,

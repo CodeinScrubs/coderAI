@@ -54,3 +54,5 @@ Desktop.ini
 
 # Local application archive
 coderai_data/
+.pytest_tmp/
+.pytest_cache/

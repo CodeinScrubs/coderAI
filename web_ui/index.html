@@ -276,6 +276,22 @@
 
             <div class="settings-card">
               <span class="settings-card-title">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                Execution Sandbox
+              </span>
+              <label>Sandbox Mode
+                <select id="sandboxMode">
+                  <option value="auto">Auto (Docker if available, local fallback)</option>
+                  <option value="docker">Docker Container (Strict Isolation)</option>
+                  <option value="local">Local Process (Guardrails &amp; Timeout)</option>
+                </select>
+              </label>
+              <label>Docker Image <input id="sandboxDockerImage" placeholder="python:3.11-slim"></label>
+              <span class="settings-note">Docker mounts only your active workspace with restricted memory, CPU, and network isolation.</span>
+            </div>
+
+            <div class="settings-card">
+              <span class="settings-card-title">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
                 Custom API
               </span>
@@ -371,9 +387,13 @@
         <section id="messages" class="messages"></section>
         <form id="chatForm" class="composer">
           <textarea id="promptInput" placeholder="Write your request..."></textarea>
-          <button type="submit" class="primary">
+          <button type="submit" id="sendBtn" class="primary">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4 20-7Z"/><path d="M11 13 22 2"/></svg>
             Send
+          </button>
+          <button type="button" id="stopBtn" class="danger" style="display:none" title="Stop generation">
+            <svg viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+            Stop
           </button>
         </form>
         </aside>

@@ -6,11 +6,17 @@ get_workspace() before reading or writing files.
 """
 
 import os
+import sys
 import subprocess
 import json
+import uuid
 import re
+import threading
 import urllib.request
 import urllib.error
+import urllib.parse
+import ipaddress
+import socket
 from pathlib import Path
 from datetime import datetime
 from typing import Callable
@@ -18,11 +24,14 @@ from typing import Callable
 from git_manager import GitManager
 from codebase_index import CodebaseIndex, IncrementalIndexer
 from workspace_filter import iter_workspace_files, walk_workspace
+from sandbox_runner import SandboxRunner
 
 MAX_OUTPUT_CHARS = 8_000
 EXEC_TIMEOUT     = 15
 TAVILY_ENABLED = os.getenv("TAVILY_ENABLED", "false").lower() == "true"
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
+SANDBOX_MODE = os.getenv("SANDBOX_MODE", "auto")
+SANDBOX_DOCKER_IMAGE = os.getenv("SANDBOX_DOCKER_IMAGE", "python:3.11-slim")
 
 # Default workspace used before the user selects a project folder.
 _DEFAULT_WORKSPACE = Path(os.getenv("AGENT_WORKSPACE", "./agent_workspace")).resolve()
@@ -32,6 +41,12 @@ _DEFAULT_WORKSPACE.mkdir(parents=True, exist_ok=True)
 WORKSPACE_DIR: Path = _DEFAULT_WORKSPACE
 GIT_APPROVAL_MODE = True
 _tool_event_sink: Callable[[dict], None] | None = None
+
+
+def set_sandbox_config(mode: str = "auto", docker_image: str = "python:3.11-slim") -> None:
+    global SANDBOX_MODE, SANDBOX_DOCKER_IMAGE
+    SANDBOX_MODE = str(mode or "auto").lower()
+    SANDBOX_DOCKER_IMAGE = str(docker_image or "python:3.11-slim")
 
 
 def set_git_config(approval_mode: bool = True) -> None:
@@ -47,6 +62,64 @@ def set_tool_event_sink(sink: Callable[[dict], None] | None) -> None:
 def _emit_tool_event(event: dict) -> None:
     if _tool_event_sink:
         _tool_event_sink(event)
+
+
+_active_processes: set[subprocess.Popen] = set()
+_process_lock = threading.Lock()
+_cancel_event = threading.Event()
+
+
+def is_execution_cancelled() -> bool:
+    return _cancel_event.is_set()
+
+
+def reset_cancel_flag() -> None:
+    _cancel_event.clear()
+
+
+def cancel_current_execution() -> bool:
+    _cancel_event.set()
+    with _process_lock:
+        killed_any = False
+        for proc in list(_active_processes):
+            try:
+                _kill_proc_tree(proc)
+                killed_any = True
+            except Exception:
+                pass
+        _active_processes.clear()
+        return killed_any
+
+
+def _register_process(proc: subprocess.Popen) -> None:
+    with _process_lock:
+        _active_processes.add(proc)
+
+
+def _unregister_process(proc: subprocess.Popen) -> None:
+    with _process_lock:
+        _active_processes.discard(proc)
+
+
+def _kill_proc_tree(proc: subprocess.Popen) -> None:
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True,
+                timeout=5,
+            )
+        else:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
 
 
 def _update_code_index(path: str, deleted: bool = False) -> None:
@@ -612,7 +685,52 @@ def tool_list_files(pattern: str = "**/*") -> str:
         return f"Error: {e}"
 
 
+_DANGEROUS_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"\brm\s+(-[rfRF]{1,4}\s+)?(/\s*$|/\*|~\s*$|\$HOME\b)", re.IGNORECASE), "Root / home directory deletion"),
+    (re.compile(r"\b(rd|rmdir)\s+/[sS]\s+/[qQ]\s+[cC]:\\?", re.IGNORECASE), "C:\\ drive root directory wipe"),
+    (re.compile(r"\bdel\s+/[fF]\s+/[sS]\s+/[qQ]\s+[cC]:\\?", re.IGNORECASE), "C:\\ drive root file wipe"),
+    (re.compile(r"\bformat\s+[a-zA-Z]:", re.IGNORECASE), "Drive format command"),
+    (re.compile(r"\bmkfs(\.\w+)?\b", re.IGNORECASE), "Filesystem format command"),
+    (re.compile(r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:", re.IGNORECASE), "Fork bomb"),
+    (re.compile(r"\b(shutdown|reboot|poweroff|init\s+[06])\b", re.IGNORECASE), "System shutdown / reboot command"),
+]
+
+_SENSITIVE_ENV_KEYS = {
+    "CUSTOM_API_KEY",
+    "TAVILY_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "AWS_SECRET_ACCESS_KEY",
+    "GITHUB_TOKEN",
+    "GIT_PASSWORD",
+    "LD_PRELOAD",
+    "DYLD_INSERT_LIBRARIES",
+}
+
+
+def _is_destructive_command(command: str) -> tuple[bool, str]:
+    cmd_clean = command.strip()
+    for pattern, description in _DANGEROUS_PATTERNS:
+        if pattern.search(cmd_clean):
+            return True, description
+    return False, ""
+
+
+def _get_sanitized_env() -> dict[str, str]:
+    env = dict(os.environ)
+    for key in _SENSITIVE_ENV_KEYS:
+        env.pop(key, None)
+    env["PYTHONPATH"] = str(get_workspace().resolve())
+    return env
+
+
 def tool_run_bash(command: str) -> str:
+    if is_execution_cancelled():
+        return "Execution cancelled by user."
+    is_dangerous, danger_reason = _is_destructive_command(command)
+    if is_dangerous:
+        return f"Security Error: Command blocked due to potentially destructive system operation ({danger_reason})."
     if not _approval_state["always_allow"]:
         if not _approval_state["approved"] or _approval_state["tool_name"] != "run_bash":
             _request_approval("run_bash", {"command": command}, command)
@@ -623,26 +741,35 @@ def tool_run_bash(command: str) -> str:
         reason = _approval_state.get("rejection_reason") or "User rejected execution."
         _approval_state["rejected"] = False
         return f"Execution rejected: {reason}"
-    try:
-        result = subprocess.run(
-            command, shell=True, cwd=str(get_workspace()),
-            capture_output=True, text=True, timeout=EXEC_TIMEOUT,
-        )
-        parts = []
-        if result.stdout.strip(): parts.append(f"STDOUT:\n{result.stdout.strip()}")
-        if result.stderr.strip(): parts.append(f"STDERR:\n{result.stderr.strip()}")
-        parts.append(f"exit code: {result.returncode}")
-        output = "\n\n".join(parts)
-        if len(output) > MAX_OUTPUT_CHARS:
-            output = output[:MAX_OUTPUT_CHARS] + "\n... [truncated]"
-        return output or "(empty output)"
-    except subprocess.TimeoutExpired:
-        return f"Timeout: exceeded {EXEC_TIMEOUT} seconds"
-    except Exception as e:
-        return f"Error: {e}"
+
+    runner = SandboxRunner(
+        workspace_path=get_workspace(),
+        mode=SANDBOX_MODE,
+        docker_image=SANDBOX_DOCKER_IMAGE,
+        timeout_seconds=EXEC_TIMEOUT,
+    )
+    result = runner.run_bash_command(
+        command=command,
+        env=_get_sanitized_env(),
+        process_register_cb=_register_process,
+    )
+    parts = []
+    if result.stdout and result.stdout.strip():
+        parts.append(f"STDOUT:\n{result.stdout.strip()}")
+    if result.stderr and result.stderr.strip():
+        parts.append(f"STDERR:\n{result.stderr.strip()}")
+    parts.append(f"exit code: {result.exit_code}")
+    if result.used_sandbox == "docker":
+        parts.append("(Executed inside Docker container sandbox)")
+    output = "\n\n".join(parts)
+    if len(output) > MAX_OUTPUT_CHARS:
+        output = output[:MAX_OUTPUT_CHARS] + "\n... [truncated]"
+    return output or "(empty output)"
 
 
 def tool_run_python(code: str) -> str:
+    if is_execution_cancelled():
+        return "Execution cancelled by user."
     if not _approval_state["always_allow"]:
         if not _approval_state["approved"] or _approval_state["tool_name"] != "run_python":
             _request_approval("run_python", {"code": code}, code)
@@ -653,32 +780,59 @@ def tool_run_python(code: str) -> str:
         reason = _approval_state.get("rejection_reason") or "User rejected execution."
         _approval_state["rejected"] = False
         return f"Execution rejected: {reason}"
-    tmp = get_workspace() / "__tmp_agent__.py"
+
+    runner = SandboxRunner(
+        workspace_path=get_workspace(),
+        mode=SANDBOX_MODE,
+        docker_image=SANDBOX_DOCKER_IMAGE,
+        timeout_seconds=EXEC_TIMEOUT,
+    )
+    result = runner.run_python_code(
+        code=code,
+        env=_get_sanitized_env(),
+        process_register_cb=_register_process,
+    )
+    parts = []
+    if result.stdout and result.stdout.strip():
+        parts.append(f"OUTPUT:\n{result.stdout.strip()}")
+    if result.stderr and result.stderr.strip():
+        parts.append(f"STDERR:\n{result.stderr.strip()}")
+    parts.append(f"exit code: {result.exit_code}")
+    if result.used_sandbox == "docker":
+        parts.append("(Executed inside Docker container sandbox)")
+    output = "\n\n".join(parts)
+    if len(output) > MAX_OUTPUT_CHARS:
+        output = output[:MAX_OUTPUT_CHARS] + "\n... [truncated]"
+    return output or "(empty output)"
+
+
+def _is_url_safe(url: str) -> tuple[bool, str]:
     try:
-        tmp.write_text(code, encoding="utf-8")
-        result = subprocess.run(
-            ["python3", str(tmp)], cwd=str(get_workspace()),
-            capture_output=True, text=True, timeout=EXEC_TIMEOUT,
-        )
-        parts = []
-        if result.stdout.strip(): parts.append(f"OUTPUT:\n{result.stdout.strip()}")
-        if result.stderr.strip(): parts.append(f"STDERR:\n{result.stderr.strip()}")
-        parts.append(f"exit code: {result.returncode}")
-        output = "\n\n".join(parts)
-        if len(output) > MAX_OUTPUT_CHARS:
-            output = output[:MAX_OUTPUT_CHARS] + "\n... [truncated]"
-        return output or "(empty output)"
-    except subprocess.TimeoutExpired:
-        return f"Timeout: exceeded {EXEC_TIMEOUT} seconds"
-    except Exception as e:
-        return f"Error: {e}"
-    finally:
-        tmp.unlink(missing_ok=True)
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in {"http", "https"}:
+            return False, f"Unsupported URL scheme: {parsed.scheme}"
+        hostname = parsed.hostname
+        if not hostname:
+            return False, "Invalid URL hostname"
+        if hostname.lower() in {"localhost", "127.0.0.1", "::1"}:
+            return False, "Requests to localhost/loopback addresses are blocked"
+        try:
+            ip = ipaddress.ip_address(hostname)
+            if ip.is_private or ip.is_loopback or ip.is_link_local:
+                return False, f"Requests to private/internal IP address {ip} are blocked"
+        except ValueError:
+            pass
+        return True, ""
+    except Exception as exc:
+        return False, f"URL parse error: {exc}"
 
 
 def tool_fetch_url(url: str, max_chars: int = 4000) -> str:
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        safe, reason = _is_url_safe(url)
+        if not safe:
+            return f"Error: {reason}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             raw = resp.read()
         enc  = resp.headers.get_content_charset() or "utf-8"

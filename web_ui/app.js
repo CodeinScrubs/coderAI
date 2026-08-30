@@ -54,10 +54,24 @@ function installEditorMetricStyles() {
   document.head.appendChild(style);
 }
 
+function getActiveSessionId() {
+  let sid = sessionStorage.getItem("coderai_session_id");
+  if (!sid) {
+    sid = "sess_" + Math.random().toString(36).slice(2, 10);
+    sessionStorage.setItem("coderai_session_id", sid);
+  }
+  return sid;
+}
+
 async function api(path, options = {}) {
+  const headers = {
+    "Content-Type": "application/json",
+    "X-Session-ID": getActiveSessionId(),
+    ...(options.headers || {}),
+  };
   const res = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
     ...options,
+    headers,
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || data.message || "Request failed");
@@ -292,6 +306,8 @@ function renderState(data) {
   $("topCustomApiModel").value = data.settings.custom_api_model || "gpt-4o-mini";
   $("customApiKey").value = "";
   $("topCustomApiKey").value = "";
+  if ($("sandboxMode")) $("sandboxMode").value = data.settings.sandbox_mode || "auto";
+  if ($("sandboxDockerImage")) $("sandboxDockerImage").value = data.settings.sandbox_docker_image || "python:3.11-slim";
   updateCustomApiPanel();
   $("systemPromptEditor").value = data.settings.system_prompt || "";
   $("selectedPromptName").textContent = data.settings.selected_prompt || "Custom system prompt";
@@ -707,7 +723,7 @@ async function cloneGitRepository() {
   }
   const terminal = $("gitCloneTerminal");
   terminal.textContent = "";
-  setLoading(true, "Cloning repository...", true);
+  setLoading(true, "Cloning repository...");
   $("cloneGitRepo").disabled = true;
   try {
     const response = await fetch("/api/git/clone_stream", {
@@ -1094,28 +1110,15 @@ function renderGeneratedCodeFromMessages(force = false) {
 }
 
 function setWorkspaceLocked(isLocked) {
-  state.workspaceLocked = Boolean(isLocked);
-  document.body.classList.toggle("workspace-locked", state.workspaceLocked);
-  document.querySelectorAll(".workspace-panel button, .workspace-panel input, .workspace-panel select, .workspace-panel textarea")
-    .forEach((control) => {
-      if (state.workspaceLocked) {
-        if (!("lockPrevDisabled" in control.dataset)) {
-          control.dataset.lockPrevDisabled = control.disabled ? "1" : "0";
-        }
-        control.disabled = true;
-      } else {
-        control.disabled = control.dataset.lockPrevDisabled === "1";
-        delete control.dataset.lockPrevDisabled;
-      }
-    });
+  state.workspaceLocked = false;
+  document.body.classList.remove("workspace-locked");
 }
 
-function setLoading(isLoading, text = "Working...", lockWorkspace = state.workspaceLocked) {
+function setLoading(isLoading, text = "Working...") {
   document.body.classList.toggle("loading", isLoading);
   $("loadingText").textContent = text;
   const agentLabel = document.querySelector(".signal.is-agent .signal-label");
   if (agentLabel) agentLabel.textContent = isLoading ? "Agent working" : "Agent idle";
-  setWorkspaceLocked(isLoading ? lockWorkspace : false);
 }
 
 function appendStreamingAssistant() {
@@ -1329,6 +1332,8 @@ async function saveSettings() {
       tavily_api_key: $("tavilyApiKey").value,
       git_approval_mode: $("gitApprovalMode").checked,
       smart_skill_confirmation: $("smartSkillConfirmation").checked,
+      sandbox_mode: $("sandboxMode") ? $("sandboxMode").value : "auto",
+      sandbox_docker_image: $("sandboxDockerImage") ? $("sandboxDockerImage").value.trim() : "python:3.11-slim",
       custom_api_url: apiUrl,
       custom_api_key: apiKey,
       custom_api_model: customApiModel,
@@ -1379,7 +1384,7 @@ async function savePrompt() {
 }
 
 async function scanProject() {
-  setLoading(true, "Scanning project...", true);
+  setLoading(true, "Scanning project...");
   try {
     const data = await api("/api/scan", { method: "POST", body: JSON.stringify({ max_files: 250 }) });
     renderState(data.state);
@@ -1388,33 +1393,233 @@ async function scanProject() {
   }
 }
 
+function dispatchStreamEvent(event, ctx) {
+  if (!event || typeof event !== "object") return;
+  if (event.type === "state") {
+    renderState(event.state);
+    ctx.ensureStreamTarget("Preparing context...");
+  } else if (event.type === "status") {
+    setLoading(true, event.message);
+    ctx.ensureStreamTarget(event.message || "Working...");
+  } else if (event.type === "token") {
+    ctx.ensureStreamTarget("");
+    ctx.appendToken(event.content || "");
+  } else if (event.type === "tool_call") {
+    setLoading(true, `Running ${event.name}...`);
+    appendToolStatus(event.name, JSON.stringify(event.args || {}, null, 2));
+  } else if (event.type === "tool_result") {
+    appendToolStatus(`${event.name} result`, String(event.result || "").slice(0, 1200));
+  } else if (event.type === "skill_selected" || event.type === "skill_applied" || event.type === "skill_failed") {
+    appendSkillStatus(event);
+  } else if (event.type === "approval_required") {
+    setLoading(true, `Waiting for approval: ${event.name}`);
+    showApproval(event, false);
+  } else if (event.type === "git_diff_preview") {
+    setLoading(true, `Reviewing changes to ${event.args?.path || "file"}`);
+    showApproval(event, true);
+    showEditorView("git");
+  } else if (event.type === "git_commit_created") {
+    appendToolStatus("Git checkpoint", `${event.commit.slice(0, 8)} ${event.message}`);
+  } else if (event.type === "git_checkpoint_created") {
+    appendToolStatus("Session checkpoint", `Created branch ${event.branch}`);
+  } else if (event.type === "memory_used") {
+    $("memoryUsageIndicator").textContent = `${event.count} memory fact(s) used`;
+  } else if (event.type === "code_rag_used") {
+    appendToolStatus("Codebase context", event.query_type === "project_level" ? "Project overview and dependency graph loaded" : `${event.count} relevant chunk(s) plus graph relations loaded`);
+  } else if (event.type === "code_index_updated") {
+    appendToolStatus("Code index", `${event.path || "File"} updated · ${event.chunks || 0} chunk(s)`);
+  } else if (event.type === "code_index_error") {
+    appendToolStatus("Code index warning", event.message || "Index update failed");
+  } else if (event.type === "cancelled") {
+    ctx.showStreamNotice("⛔ Generation stopped by user.");
+    ctx.setSawDone(true);
+  } else if (event.type === "error") {
+    ctx.showStreamNotice(event.message || "Error");
+  } else if (event.type === "done") {
+    ctx.setSawDone(true);
+    renderState(event.state);
+  }
+}
+
+async function streamViaWebSocket(prompt, activeContext, ctx, controller) {
+  if (typeof WebSocket === "undefined") throw new Error("WebSocket not supported");
+  const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+  const sid = getActiveSessionId();
+  const wsUrl = `${protocol}//${location.host}/ws/chat?session_id=${encodeURIComponent(sid)}`;
+
+  return new Promise((resolve, reject) => {
+    let ws;
+    try {
+      ws = new WebSocket(wsUrl);
+    } catch (e) {
+      return reject(e);
+    }
+
+    let opened = false;
+    let completed = false;
+
+    const cleanup = () => {
+      if (ws) {
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onerror = null;
+        ws.onclose = null;
+        try { ws.close(); } catch (_) {}
+      }
+    };
+
+    const abortListener = () => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try { ws.send(JSON.stringify({ type: "cancel", session_id: sid })); } catch (_) {}
+      }
+      cleanup();
+      resolve(false);
+    };
+    controller.signal.addEventListener("abort", abortListener, { once: true });
+
+    ws.onopen = () => {
+      opened = true;
+      try {
+        ws.send(JSON.stringify({ type: "chat", session_id: sid, prompt, active_context: activeContext }));
+      } catch (err) {
+        cleanup();
+        reject(err);
+      }
+    };
+
+    ws.onmessage = async (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        dispatchStreamEvent(payload, ctx);
+        if (payload.type === "done" || payload.type === "cancelled") {
+          completed = true;
+          controller.signal.removeEventListener("abort", abortListener);
+          cleanup();
+          resolve(true);
+        }
+      } catch (err) {
+        ctx.showStreamNotice(`[ws parse error] ${err.message}`);
+      }
+    };
+
+    ws.onerror = (err) => {
+      if (!opened) {
+        cleanup();
+        reject(new Error("WebSocket connection failed"));
+      } else {
+        ctx.showStreamNotice("[ws connection error]");
+      }
+    };
+
+    ws.onclose = () => {
+      controller.signal.removeEventListener("abort", abortListener);
+      if (!completed && !opened) {
+        reject(new Error("WebSocket closed before opening"));
+      } else {
+        resolve(completed);
+      }
+    };
+  });
+}
+
+async function streamViaHttp(prompt, activeContext, ctx, controller) {
+  const sid = getActiveSessionId();
+  const res = await fetch("/api/chat_stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Session-ID": sid },
+    body: JSON.stringify({ session_id: sid, prompt, active_context: activeContext }),
+    signal: controller.signal,
+  });
+  if (!res.ok || !res.body) {
+    const fallback = await res.json().catch(() => ({ error: "Streaming request failed" }));
+    throw new Error(fallback.error || "Streaming request failed");
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const event = JSON.parse(line);
+        dispatchStreamEvent(event, ctx);
+      } catch (err) {
+        ctx.showStreamNotice(`[stream parse error] ${err.message}`);
+      }
+    }
+  }
+  if (buffer.trim()) {
+    try {
+      const event = JSON.parse(buffer.trim());
+      dispatchStreamEvent(event, ctx);
+    } catch (_) {}
+  }
+}
+
 async function sendPrompt(prompt) {
-  setLoading(true, "Sending prompt...", true);
+  setLoading(true, "Sending prompt...");
+  $("sendBtn").style.display = "none";
+  $("stopBtn").style.display = "inline-flex";
+  $("stopBtn").disabled = false;
+  $("stopBtn").innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg> Stop`;
+
   let streamTarget = appendStreamingAssistant();
   streamTarget.textContent = "Preparing request...";
   let streamText = "";
   let sawDone = false;
   const activeContext = currentActiveContext();
   state.editorDirty = false;
-  const ensureStreamTarget = (placeholder = "Working...") => {
-    if (!streamTarget || !streamTarget.isConnected) {
-      streamTarget = appendStreamingAssistant();
-    }
-    if (!streamText && placeholder) {
-      streamTarget.textContent = placeholder;
-    }
-    return streamTarget;
+  const controller = new AbortController();
+
+  const stopHandler = async (e) => {
+    e?.preventDefault?.();
+    $("stopBtn").disabled = true;
+    $("stopBtn").innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg> Stopping...`;
+    controller.abort();
+    ctx.showStreamNotice("⛔ Stopping generation...");
+    try {
+      await fetch("/api/cancel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
+    } catch (_) {}
   };
-  const showStreamNotice = (message) => {
-    ensureStreamTarget("");
-    if (streamText) {
-      streamText += `\n\n${message}`;
+  $("stopBtn").addEventListener("click", stopHandler, { once: true });
+
+  const ctx = {
+    ensureStreamTarget: (placeholder = "Working...") => {
+      if (!streamTarget || !streamTarget.isConnected) {
+        streamTarget = appendStreamingAssistant();
+      }
+      if (!streamText && placeholder) {
+        streamTarget.textContent = placeholder;
+      }
+      return streamTarget;
+    },
+    showStreamNotice: (message) => {
+      ctx.ensureStreamTarget("");
+      if (streamText) {
+        streamText += `\n\n${message}`;
+        streamTarget.textContent = streamText;
+      } else {
+        streamTarget.textContent = message;
+      }
+      $("messages").scrollTop = $("messages").scrollHeight;
+    },
+    appendToken: (chunk) => {
+      streamText += chunk;
       streamTarget.textContent = streamText;
-    } else {
-      streamTarget.textContent = message;
-    }
-    $("messages").scrollTop = $("messages").scrollHeight;
+      updateGeneratedCodeFromStreaming(streamText);
+      $("messages").scrollTop = $("messages").scrollHeight;
+    },
+    setSawDone: (val) => {
+      sawDone = val;
+    },
   };
+
   const refreshEditorAfterDone = async () => {
     if (activeContext?.path && activeContext.path !== "Generated Code") {
       try {
@@ -1428,102 +1633,34 @@ async function sendPrompt(prompt) {
       renderGeneratedCodeFromMessages(true);
     }
   };
+
   try {
-    const res = await fetch("/api/chat_stream", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt, active_context: activeContext }),
-    });
-    if (!res.ok || !res.body) {
-      const fallback = await res.json().catch(() => ({ error: "Streaming request failed" }));
-      throw new Error(fallback.error || "Streaming request failed");
+    let usedWs = false;
+    try {
+      usedWs = await streamViaWebSocket(prompt, activeContext, ctx, controller);
+    } catch (wsErr) {
+      console.warn("WebSocket stream fallback to HTTP:", wsErr);
+      await streamViaHttp(prompt, activeContext, ctx, controller);
     }
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        let event;
-        try {
-          event = JSON.parse(line);
-        } catch (err) {
-          showStreamNotice(`[stream parse error] ${err.message}`);
-          continue;
-        }
-        if (event.type === "state") {
-          renderState(event.state);
-          ensureStreamTarget("Preparing context...");
-        } else if (event.type === "status") {
-          setLoading(true, event.message);
-          ensureStreamTarget(event.message || "Working...");
-        } else if (event.type === "token") {
-          ensureStreamTarget("");
-          streamText += event.content || "";
-          streamTarget.textContent = streamText;
-          updateGeneratedCodeFromStreaming(streamText);
-          $("messages").scrollTop = $("messages").scrollHeight;
-        } else if (event.type === "tool_call") {
-          setLoading(true, `Running ${event.name}...`);
-          appendToolStatus(event.name, JSON.stringify(event.args || {}, null, 2));
-        } else if (event.type === "tool_result") {
-          appendToolStatus(`${event.name} result`, String(event.result || "").slice(0, 1200));
-        } else if (event.type === "skill_selected" || event.type === "skill_applied" || event.type === "skill_failed") {
-          appendSkillStatus(event);
-        } else if (event.type === "approval_required") {
-          setLoading(true, `Waiting for approval: ${event.name}`);
-          showApproval(event, false);
-        } else if (event.type === "git_diff_preview") {
-          setLoading(true, `Reviewing changes to ${event.args?.path || "file"}`);
-          showApproval(event, true);
-          showEditorView("git");
-        } else if (event.type === "git_commit_created") {
-          appendToolStatus("Git checkpoint", `${event.commit.slice(0, 8)} ${event.message}`);
-        } else if (event.type === "git_checkpoint_created") {
-          appendToolStatus("Session checkpoint", `Created branch ${event.branch}`);
-        } else if (event.type === "memory_used") {
-          $("memoryUsageIndicator").textContent = `${event.count} memory fact(s) used`;
-        } else if (event.type === "code_rag_used") {
-          appendToolStatus("Codebase context", event.query_type === "project_level" ? "Project overview and dependency graph loaded" : `${event.count} relevant chunk(s) plus graph relations loaded`);
-        } else if (event.type === "code_index_updated") {
-          appendToolStatus("Code index", `${event.path || "File"} updated · ${event.chunks || 0} chunk(s)`);
-        } else if (event.type === "code_index_error") {
-          appendToolStatus("Code index warning", event.message || "Index update failed");
-        } else if (event.type === "error") {
-          showStreamNotice(event.message || "Error");
-        } else if (event.type === "done") {
-          sawDone = true;
-          renderState(event.state);
-          await refreshEditorAfterDone();
-        }
-      }
-    }
-    if (buffer.trim()) {
-      try {
-        const event = JSON.parse(buffer.trim());
-        if (event.type === "done") {
-          sawDone = true;
-          renderState(event.state);
-          await refreshEditorAfterDone();
-        } else if (event.type === "error") {
-          showStreamNotice(event.message || "Error");
-        }
-      } catch (err) {
-        showStreamNotice(`[stream ended with partial data] ${err.message}`);
-      }
-    }
-    if (!sawDone) {
-      showStreamNotice("[stream ended before the agent sent a final state]");
+    if (sawDone) {
+      await refreshEditorAfterDone();
+    } else if (!controller.signal.aborted) {
+      ctx.showStreamNotice("[stream completed]");
+      await refreshEditorAfterDone();
     }
   } catch (err) {
-    showStreamNotice(`Agent stream error: ${err.message}`);
+    if (err.name === "AbortError") {
+      ctx.showStreamNotice("⛔ Generation stopped by user.");
+    } else {
+      ctx.showStreamNotice(`Agent stream error: ${err.message}`);
+    }
   } finally {
+    $("stopBtn").removeEventListener("click", stopHandler);
+    $("stopBtn").disabled = false;
+    $("stopBtn").innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg> Stop`;
+    $("sendBtn").style.display = "";
+    $("stopBtn").style.display = "none";
     setLoading(false);
   }
 }

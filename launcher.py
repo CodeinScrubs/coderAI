@@ -22,10 +22,23 @@ def main() -> None:
     os.environ.setdefault("WEB_APP_HOST", "127.0.0.1")
     os.environ.setdefault("WEB_APP_PORT", str(_find_free_port()))
 
-    import web_app
-
-    url = f"http://{web_app.HOST}:{web_app.PORT}/"
+    host = os.environ["WEB_APP_HOST"]
+    port = int(os.environ["WEB_APP_PORT"])
+    url = f"http://{host}:{port}/"
     threading.Timer(1.2, lambda: webbrowser.open(url)).start()
+
+    framework = os.getenv("SERVER_FRAMEWORK", "fastapi").lower()
+    if framework == "fastapi":
+        try:
+            import uvicorn
+            from fastapi_app import app
+            print(f"Starting CoderAI (FastAPI + Uvicorn + WebSocket) on {url}")
+            uvicorn.run(app, host=host, port=port, log_level="info")
+            return
+        except Exception as exc:
+            print(f"FastAPI start failed ({exc}); falling back to standard web_app...")
+
+    import web_app
     web_app.main()
 
 

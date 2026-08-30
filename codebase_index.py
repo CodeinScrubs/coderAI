@@ -29,6 +29,9 @@ INDEXABLE_EXTENSIONS = {".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".go", ".r
 MAX_FILE_BYTES = int(os.getenv("CODE_INDEX_MAX_FILE_BYTES", str(2 * 1024 * 1024)))
 
 
+from syntax_chunker import SyntaxChunker
+
+
 @dataclass
 class CodeChunk:
     id: str
@@ -45,48 +48,49 @@ class CodeChunk:
 
 
 class CodeChunker:
+    def __init__(self):
+        self._syntax_chunker = SyntaxChunker()
+
     def chunk(self, file_path: str, content: str, modified: float) -> list[CodeChunk]:
-        if Path(file_path).suffix.lower() == ".py":
-            try:
-                return self.chunk_python_file(file_path, content, modified)
-            except SyntaxError:
-                pass
-        return self.chunk_generic_file(file_path, content, modified)
+        raw_chunks = self._syntax_chunker.chunk(file_path, content, modified)
+        return [
+            CodeChunk(
+                id=rc.id,
+                file_path=rc.file_path,
+                symbol_name=rc.symbol_name,
+                symbol_type=rc.symbol_type,
+                start_line=rc.start_line,
+                end_line=rc.end_line,
+                content=rc.content,
+                docstring=rc.docstring,
+                embedding=rc.embedding,
+                last_modified=rc.last_modified,
+                content_hash=rc.content_hash,
+            )
+            for rc in raw_chunks
+        ]
 
     def chunk_python_file(self, file_path: str, content: str, modified: float) -> list[CodeChunk]:
-        tree = ast.parse(content)
-        lines = content.splitlines()
-        chunks = []
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                continue
-            start, end = int(node.lineno), int(node.end_lineno or node.lineno)
-            value = "\n".join(lines[start - 1:end])
-            symbol_type = "class" if isinstance(node, ast.ClassDef) else "function"
-            chunks.append(self._make(file_path, node.name, symbol_type, start, end, value, ast.get_docstring(node), modified))
-        module_lines = []
-        for index, line in enumerate(lines[:300], 1):
-            if line.startswith(("import ", "from ", "__", "#")) or not line.strip():
-                module_lines.append((index, line))
-        if module_lines:
-            chunks.insert(0, self._make(file_path, Path(file_path).stem, "module", module_lines[0][0], module_lines[-1][0], "\n".join(line for _, line in module_lines), ast.get_docstring(tree), modified))
-        return chunks or self.chunk_generic_file(file_path, content, modified)
+        return self.chunk(file_path, content, modified)
 
     def chunk_generic_file(self, file_path: str, content: str, modified: float, max_tokens: int = 300) -> list[CodeChunk]:
-        lines = content.splitlines()
-        chunks, current, start = [], [], 1
-        max_chars = max_tokens * 4
-        for line_no, line in enumerate(lines, 1):
-            boundary = not line.strip() and current and sum(len(item) + 1 for item in current) >= max_chars // 2
-            overflow = current and sum(len(item) + 1 for item in current) + len(line) > max_chars
-            if boundary or overflow:
-                chunks.append(self._make(file_path, None, "doc", start, line_no - 1, "\n".join(current).strip(), None, modified))
-                current, start = [], line_no + (1 if boundary else 0)
-            if line.strip() or current:
-                current.append(line)
-        if current:
-            chunks.append(self._make(file_path, None, "doc", start, len(lines), "\n".join(current).strip(), None, modified))
-        return [chunk for chunk in chunks if chunk.content]
+        raw_chunks = self._syntax_chunker.chunk_generic(file_path, content, modified, max_tokens)
+        return [
+            CodeChunk(
+                id=rc.id,
+                file_path=rc.file_path,
+                symbol_name=rc.symbol_name,
+                symbol_type=rc.symbol_type,
+                start_line=rc.start_line,
+                end_line=rc.end_line,
+                content=rc.content,
+                docstring=rc.docstring,
+                embedding=rc.embedding,
+                last_modified=rc.last_modified,
+                content_hash=rc.content_hash,
+            )
+            for rc in raw_chunks
+        ]
 
     @staticmethod
     def _make(file_path, symbol_name, symbol_type, start, end, content, docstring, modified):
@@ -112,9 +116,10 @@ class CodebaseIndex:
         self._init_schema()
 
     def _connect(self):
-        db = sqlite3.connect(self.db_path, timeout=30)
+        db = sqlite3.connect(self.db_path, timeout=30.0)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA busy_timeout=30000")
         return db
 
     def _init_schema(self):
@@ -253,13 +258,30 @@ class CodebaseIndex:
 
     def retrieve_relevant_code(self, query: str, top_k: int = 5) -> list[dict]:
         limit = max(1, min(int(top_k), 20))
-        keyword = self._fts_search(query, limit * 2)
-        semantic = self._semantic_search(query, limit * 2)
+        keyword = self._fts_search(query, limit * 3)
+        semantic = self._semantic_search(query, limit * 3)
         scores: dict[str, float] = {}
+        rrf_k = 60.0
         for rank, item in enumerate(keyword):
-            scores[item["id"]] = scores.get(item["id"], 0.0) + 1.0 / (60 + rank)
+            scores[item["id"]] = scores.get(item["id"], 0.0) + (1.2 / (rrf_k + rank))
         for rank, item in enumerate(semantic):
-            scores[item["id"]] = scores.get(item["id"], 0.0) + 1.0 / (60 + rank)
+            scores[item["id"]] = scores.get(item["id"], 0.0) + (1.0 / (rrf_k + rank))
+
+        # Boost exact symbol names mentioned in the query
+        query_tokens = [t for t in re.findall(r"[A-Za-z_]\w*", query) if len(t) > 2]
+        if query_tokens:
+            try:
+                with self._connect() as db:
+                    placeholders = ",".join("?" for _ in query_tokens[:15])
+                    sym_rows = db.execute(
+                        f"SELECT id FROM code_chunks WHERE symbol_name IN ({placeholders})",
+                        query_tokens[:15],
+                    ).fetchall()
+                    for row in sym_rows:
+                        scores[row["id"]] = scores.get(row["id"], 0.0) + 0.08
+            except Exception:
+                pass
+
         ids = sorted(scores, key=scores.get, reverse=True)[:limit]
         if not ids:
             return []
@@ -269,10 +291,11 @@ class CodebaseIndex:
         by_id = {row["id"]: dict(row) for row in rows}
         result = []
         for chunk_id in ids:
-            item = by_id[chunk_id]
-            item.pop("embedding", None)
-            item["score"] = scores[chunk_id]
-            result.append(item)
+            if chunk_id in by_id:
+                item = by_id[chunk_id]
+                item.pop("embedding", None)
+                item["score"] = scores[chunk_id]
+                result.append(item)
         return result
 
     def status(self, check_freshness: bool = False) -> dict:

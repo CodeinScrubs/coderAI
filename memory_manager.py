@@ -40,9 +40,10 @@ class MemoryManager:
 
     @contextmanager
     def _connect(self):
-        connection = sqlite3.connect(self.db_path, timeout=15)
+        connection = sqlite3.connect(self.db_path, timeout=30.0)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA busy_timeout=30000")
         connection.execute("PRAGMA foreign_keys=ON")
         try:
             yield connection

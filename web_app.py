@@ -35,8 +35,15 @@ from workspace_filter import iter_workspace_files
 from tools import (
     TOOL_SCHEMAS, execute_tool, get_workspace, set_tavily_config, set_workspace,
     tool_scan_project, get_approval_state, approve_pending, reject_pending, clear_approval_state,
-    set_git_config, set_tool_event_sink,
+    set_git_config, set_tool_event_sink, set_sandbox_config,
 )
+from context_builder import (
+    clip_for_context, estimate_tokens_for_messages, estimate_tokens_for_text,
+    fast_tokens_for_messages, get_model_context_window, message_summary_line,
+    adaptive_compact_messages, compact_tool_output,
+)
+from tool_parser import repair_json_tool_arguments, extract_fallback_tool_calls_from_text
+from session_manager import SessionStore, build_project_cards
 
 APPROVAL_POLL_INTERVAL = float(os.getenv("AGENT_APPROVAL_POLL_INTERVAL", "1.0"))
 APPROVAL_TIMEOUT = int(os.getenv("AGENT_APPROVAL_TIMEOUT", "600"))
@@ -128,7 +135,7 @@ STATE = {
     "used_skills_log": [],
     "selected_skills": [],
     "conn_mode": MODE_LOCAL,
-    "model": os.getenv("OLLAMA_MODEL", "llama3"),
+    "model": os.getenv("OLLAMA_MODEL", "gemma4:12b"),
     "temperature": 0.4,
     "enable_thinking": False,
     "custom_api_url": "https://api.openai.com/v1",
@@ -150,6 +157,8 @@ STATE = {
     "tavily_enabled": os.getenv("TAVILY_ENABLED", "false").lower() == "true",
     "tavily_api_key": os.getenv("TAVILY_API_KEY", ""),
     "git_approval_mode": True,
+    "sandbox_mode": os.getenv("SANDBOX_MODE", "auto"),
+    "sandbox_docker_image": os.getenv("SANDBOX_DOCKER_IMAGE", "python:3.11-slim"),
     "generated_artifact": None,
     "git_checkpoint_workspace": "",
     "git_checkpoint_branch": "",
@@ -158,6 +167,69 @@ STATE = {
     "code_rag_hits": [],
     "code_rag_type": "",
 }
+
+SETTINGS_PATH = ROOT / "coderai_data" / "settings.json"
+
+
+def _load_persisted_settings() -> None:
+    if not SETTINGS_PATH.exists():
+        return
+    try:
+        data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return
+        for key in (
+            "conn_mode", "temperature", "enable_thinking",
+            "custom_api_url", "custom_api_key", "custom_api_model", "memory_enabled",
+            "context_token_budget", "response_token_budget", "auto_continue",
+            "tavily_enabled", "tavily_api_key", "git_approval_mode", "smart_skill_confirmation",
+            "sandbox_mode", "sandbox_docker_image",
+            "model",
+        ):
+            if key in data and data[key] is not None:
+                STATE[key] = data[key]
+    except Exception:
+        pass
+
+
+def _save_persisted_settings() -> None:
+    try:
+        SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        persisted = {
+            "conn_mode": STATE.get("conn_mode"),
+            "model": STATE.get("model"),
+            "temperature": STATE.get("temperature"),
+            "enable_thinking": STATE.get("enable_thinking"),
+            "custom_api_url": STATE.get("custom_api_url"),
+            "custom_api_key": STATE.get("custom_api_key"),
+            "custom_api_model": STATE.get("custom_api_model"),
+            "memory_enabled": STATE.get("memory_enabled"),
+            "context_token_budget": STATE.get("context_token_budget"),
+            "response_token_budget": STATE.get("response_token_budget"),
+            "auto_continue": STATE.get("auto_continue"),
+            "tavily_enabled": STATE.get("tavily_enabled"),
+            "tavily_api_key": STATE.get("tavily_api_key"),
+            "git_approval_mode": STATE.get("git_approval_mode"),
+            "smart_skill_confirmation": STATE.get("smart_skill_confirmation"),
+            "sandbox_mode": STATE.get("sandbox_mode", "auto"),
+            "sandbox_docker_image": STATE.get("sandbox_docker_image", "python:3.11-slim"),
+        }
+        SETTINGS_PATH.write_text(json.dumps(persisted, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+_load_persisted_settings()
+
+SESSION_STORE = SessionStore(STATE)
+
+
+def get_session_state(session_id: str | None = None) -> dict:
+    if not session_id or session_id == "default":
+        return STATE
+    _, sess = SESSION_STORE.get_or_create(session_id)
+    return sess
+
 
 sm = get_skills_manager()
 pm = get_prompt_manager()
@@ -168,7 +240,7 @@ skill_router = SkillRouter()
 def _active_model() -> str:
     if STATE.get("conn_mode") == MODE_CUSTOM:
         return str(STATE.get("custom_api_model") or "gpt-4o-mini").strip()
-    return str(STATE.get("model") or "llama3").strip()
+    return str(STATE.get("model") or "gemma4:12b").strip()
 
 
 def _skill_tracker(workspace: str | Path | None = None) -> SkillTracker:
@@ -331,6 +403,7 @@ def _active_tool_schemas() -> list[dict]:
 def _sync_tool_settings() -> None:
     set_tavily_config(bool(STATE.get("tavily_enabled")), STATE.get("tavily_api_key", ""))
     set_git_config(bool(STATE.get("git_approval_mode", True)))
+    set_sandbox_config(str(STATE.get("sandbox_mode", "auto")), str(STATE.get("sandbox_docker_image", "python:3.11-slim")))
 
 
 def _git_snapshot() -> dict:
@@ -366,34 +439,12 @@ def _memory_payload() -> dict:
 
 
 def _project_cards(manager: MemoryManager | None = None) -> list[dict]:
-    manager = manager or _memory_manager()
-    active_path = str(get_workspace().resolve())
-    cards = []
-    for project in manager.list_projects():
-        workspace = Path(project["workspace_path"])
-        snapshot = _workspace_snapshot_for(workspace) if workspace.is_dir() else {"files": [], "stats": {"files": 0, "kb": 0, "types": 0}}
-        git = {"is_repo": False, "files": [], "history": []}
-        if workspace.is_dir():
-            try:
-                git_manager = GitManager(workspace)
-                status = git_manager.get_status()
-                git = {
-                    "is_repo": bool(status.get("is_repo")),
-                    "branch": status.get("branch"),
-                    "files": status.get("files", []),
-                    "commits": len(git_manager.get_log(100)) if status.get("is_repo") else 0,
-                }
-            except Exception:
-                pass
-        cards.append({
-            **project,
-            "exists": workspace.is_dir(),
-            "stats": snapshot["stats"],
-            "git": git,
-            "agent_status": "running" if str(workspace.resolve()) == active_path and STATE.get("agent_running") else "idle",
-            "is_active": str(workspace.resolve()) == active_path if workspace.is_dir() else False,
-        })
-    return cards
+    return build_project_cards(
+        workspace_path=get_workspace(),
+        manager=manager or _memory_manager(),
+        is_agent_running=bool(STATE.get("agent_running")),
+        snapshot_fn=_workspace_snapshot_for,
+    )
 
 
 def _persistent_memory_context(query: str) -> str:
@@ -738,8 +789,13 @@ def _compact_memory_if_needed() -> None:
 def _message_for_context(message: dict) -> dict:
     role = message.get("role", "user")
     content = message.get("content", "")
+    if role == "tool":
+        return {"role": "tool", "name": message.get("name"), "content": compact_tool_output(content, max_chars=3500)}
     limit = MAX_ASSISTANT_HISTORY_CHARS if role == "assistant" else MAX_HISTORY_MESSAGE_CHARS
-    return {"role": role, "content": _clip_for_context(content, limit)}
+    msg = {"role": role, "content": _clip_for_context(content, limit)}
+    if "tool_calls" in message:
+        msg["tool_calls"] = message["tool_calls"]
+    return msg
 
 
 def _build_workspace_context(active_context: dict | None = None) -> str:
@@ -1093,13 +1149,11 @@ def _extract_tool_calls_ollama(message: dict) -> list[dict]:
     calls = []
     for tc in message.get("tool_calls", []) or []:
         fn = tc.get("function", {})
-        args = fn.get("arguments", {})
-        if isinstance(args, str):
-            try:
-                args = json.loads(args)
-            except json.JSONDecodeError:
-                args = {}
+        args = repair_json_tool_arguments(fn.get("arguments", {}))
         calls.append({"name": fn.get("name", ""), "arguments": args})
+    if not calls and message.get("content"):
+        available_names = [s.get("function", {}).get("name") for s in TOOL_SCHEMAS if s.get("function", {}).get("name")]
+        calls = extract_fallback_tool_calls_from_text(message.get("content", ""), available_names)
     return calls
 
 
@@ -1107,13 +1161,12 @@ def _extract_tool_calls_openai(message: dict) -> list[dict]:
     calls = []
     for tc in message.get("tool_calls", []) or []:
         fn = tc.get("function", {})
-        args = fn.get("arguments", "{}")
-        if isinstance(args, str):
-            try:
-                args = json.loads(args)
-            except json.JSONDecodeError:
-                args = {}
+        args = repair_json_tool_arguments(fn.get("arguments", "{}"))
         calls.append({"id": tc.get("id"), "type": tc.get("type", "function"), "name": fn.get("name", ""), "arguments": args})
+    if not calls and message.get("content"):
+        available_names = [s.get("function", {}).get("name") for s in TOOL_SCHEMAS if s.get("function", {}).get("name")]
+        for idx, fc in enumerate(extract_fallback_tool_calls_from_text(message.get("content", ""), available_names)):
+            calls.append({"id": f"call_fb_{idx}", "type": "function", "name": fc["name"], "arguments": fc["arguments"]})
     return calls
 
 
@@ -1248,6 +1301,10 @@ def _call_model_stream(history: list[dict], write_event) -> dict:
                 "options": {"temperature": float(STATE["temperature"]), "num_predict": response_budget},
             },
         ):
+            from tools import is_execution_cancelled
+            if is_execution_cancelled():
+                write_event({"type": "cancelled", "message": "Execution cancelled by user."})
+                break
             if event.get("done_reason"):
                 finish_reason = event.get("done_reason") or ""
             msg = event.get("message", {}) if isinstance(event, dict) else {}
@@ -1284,6 +1341,10 @@ def _call_model_stream(history: list[dict], write_event) -> dict:
         },
         headers=headers,
     ):
+        from tools import is_execution_cancelled
+        if is_execution_cancelled():
+            write_event({"type": "cancelled", "message": "Execution cancelled by user."})
+            break
         choices = event.get("choices", []) if isinstance(event, dict) else []
         if not choices:
             continue
@@ -1671,6 +1732,8 @@ def _chunk_text(text: str, size: int = 90):
 
 
 def _run_agent_stream(prompt: str, write_event, active_context: dict | None = None) -> None:
+    from tools import reset_cancel_flag, is_execution_cancelled
+    reset_cancel_flag()
     clean_prompt, skill_selections, skill_injection, turn_index = _prepare_skill_turn(prompt)
 
     _sync_tool_settings()
@@ -1702,12 +1765,19 @@ def _run_agent_stream(prompt: str, write_event, active_context: dict | None = No
     failed = False
     try:
         for iteration in range(MAX_ITERATIONS):
+            if is_execution_cancelled():
+                write_event({"type": "cancelled", "message": "Execution cancelled by user."})
+                break
             write_event({
                 "type": "status",
                 "message": f"Waiting for {STATE['model']} ({iteration + 1}/{MAX_ITERATIONS}, timeout {REQUEST_TIMEOUT}s)...",
             })
             result = _call_model_stream(history, write_event)
             thinking_text += result.get("thinking", "") or ""
+
+            if is_execution_cancelled():
+                write_event({"type": "cancelled", "message": "Execution cancelled by user."})
+                break
 
             if result["tool_calls"]:
                 if result["content"]:
@@ -1720,6 +1790,9 @@ def _run_agent_stream(prompt: str, write_event, active_context: dict | None = No
                 })
 
                 for index, tc in enumerate(result["tool_calls"]):
+                    if is_execution_cancelled():
+                        write_event({"type": "cancelled", "message": "Execution cancelled by user."})
+                        break
                     name = tc["name"]
                     args = tc["arguments"]
                     write_event({"type": "tool_call", "name": name, "args": args})
@@ -1774,14 +1847,16 @@ def _run_agent_stream(prompt: str, write_event, active_context: dict | None = No
     })
 
 
-def _client_state() -> dict:
+def _client_state(session_id: str | None = None) -> dict:
+    st = get_session_state(session_id)
     models_payload = _available_models()
     return {
+        "session_id": st.get("memory_session_id", "default"),
         "workspace": _workspace_snapshot(),
-        "messages": STATE["messages"],
-        "tools_log": STATE["tools_log"],
-        "generated_artifact": STATE.get("generated_artifact"),
-        "selected_skills": STATE["selected_skills"],
+        "messages": st["messages"],
+        "tools_log": st["tools_log"],
+        "generated_artifact": st.get("generated_artifact"),
+        "selected_skills": st["selected_skills"],
         "skills": [
             {
                 "name": s.name,
@@ -1793,31 +1868,33 @@ def _client_state() -> dict:
         ],
         "skill_usage": _skill_usage_payload(),
         "settings": {
-            "conn_mode": STATE["conn_mode"],
+            "conn_mode": st["conn_mode"],
             "model": _active_model(),
-            "ollama_model": STATE["model"],
-            "custom_api_model": STATE["custom_api_model"],
-            "temperature": STATE["temperature"],
-            "enable_thinking": STATE["enable_thinking"],
-            "custom_api_url": STATE["custom_api_url"],
-            "selected_prompt": STATE["selected_prompt"],
-            "system_prompt": STATE["system_prompt"],
-            "memory_enabled": STATE["memory_enabled"],
-            "context_token_budget": STATE["context_token_budget"],
-            "response_token_budget": STATE["response_token_budget"],
-            "auto_continue": STATE["auto_continue"],
-            "tavily_enabled": STATE["tavily_enabled"],
-            "tavily_key_set": bool(STATE.get("tavily_api_key")),
-            "git_approval_mode": STATE["git_approval_mode"],
-            "smart_skill_confirmation": STATE["smart_skill_confirmation"],
+            "ollama_model": st["model"],
+            "custom_api_model": st["custom_api_model"],
+            "temperature": st["temperature"],
+            "enable_thinking": st["enable_thinking"],
+            "custom_api_url": st["custom_api_url"],
+            "selected_prompt": st["selected_prompt"],
+            "system_prompt": st["system_prompt"],
+            "memory_enabled": st["memory_enabled"],
+            "context_token_budget": st["context_token_budget"],
+            "response_token_budget": st["response_token_budget"],
+            "auto_continue": st["auto_continue"],
+            "tavily_enabled": st["tavily_enabled"],
+            "tavily_key_set": bool(st.get("tavily_api_key")),
+            "git_approval_mode": st["git_approval_mode"],
+            "smart_skill_confirmation": st["smart_skill_confirmation"],
+            "sandbox_mode": st.get("sandbox_mode", "auto"),
+            "sandbox_docker_image": st.get("sandbox_docker_image", "python:3.11-slim"),
         },
         "memory": {
-            "enabled": STATE["memory_enabled"],
-            "summary_chars": len(STATE.get("memory_summary", "")),
-            "summarized_messages": STATE.get("memory_summarized_count", 0),
+            "enabled": st["memory_enabled"],
+            "summary_chars": len(st.get("memory_summary", "")),
+            "summarized_messages": st.get("memory_summarized_count", 0),
             "token_counter": "litellm" if _litellm_token_counter else "estimated",
             "token_counter_error": _litellm_import_error,
-            "visible_messages": len(STATE["messages"]),
+            "visible_messages": len(st["messages"]),
             "persistent": _memory_payload(),
         },
         "runtime": {
@@ -1828,8 +1905,8 @@ def _client_state() -> dict:
         },
         "git": _git_snapshot(),
         "code_index": CodebaseIndex(get_workspace()).status(),
-        "code_rag_hits": STATE.get("code_rag_hits", []),
-        "code_rag_type": STATE.get("code_rag_type", ""),
+        "code_rag_hits": st.get("code_rag_hits", []),
+        "code_rag_type": st.get("code_rag_type", ""),
         "context_usage": _context_usage_snapshot(),
         "prompts": _prompt_payload(),
         "models": models_payload,
@@ -1859,7 +1936,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/projects":
             _send_json(self, {"projects": _project_cards()})
             return
-        if path == "/api/state":
+        if path == "/api/state" or path == "/api/settings":
             _send_json(self, _client_state())
             return
         if path == "/api/models":
@@ -1929,8 +2006,10 @@ class Handler(BaseHTTPRequestHandler):
         mime = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
         self.send_response(200)
         self.send_header("Content-Type", mime)
-        if target.suffix.lower() in {".js", ".css"}:
-            self.send_header("Cache-Control", "no-cache")
+        if target.suffix.lower() in {".js", ".css", ".html"}:
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
         self.send_header("Content-Length", str(len(content)))
         self.end_headers()
         self.wfile.write(content)
@@ -1974,6 +2053,7 @@ class Handler(BaseHTTPRequestHandler):
                     "tavily_enabled", "tavily_api_key",
                     "git_approval_mode",
                     "smart_skill_confirmation",
+                    "sandbox_mode", "sandbox_docker_image",
                 ):
                     if key in data:
                         STATE[key] = data[key]
@@ -1992,6 +2072,7 @@ class Handler(BaseHTTPRequestHandler):
                         STATE[key] = max(512, int(STATE[key]))
                 if requested_mode == MODE_LOCAL and "model" in data:
                     STATE["model_user_selected"] = True
+                _save_persisted_settings()
                 _send_json(self, _client_state())
                 return
             if path == "/api/prompt":
@@ -2149,6 +2230,12 @@ class Handler(BaseHTTPRequestHandler):
                 STATE["messages"].append({"role": "assistant", "content": result})
                 STATE["tools_log"].append([{"name": "scan_project", "args": {"max_files": data.get("max_files", 200)}, "result": result}])
                 _send_json(self, {"result": result, "state": _client_state()})
+                return
+            if path == "/api/cancel":
+                from tools import cancel_current_execution
+                proc_killed = cancel_current_execution()
+                STATE["agent_running"] = False
+                _send_json(self, {"ok": True, "cancelled": True, "process_killed": proc_killed, "state": _client_state()})
                 return
             if path == "/api/chat":
                 _send_json(self, _run_agent(data.get("prompt", ""), data.get("active_context")))
