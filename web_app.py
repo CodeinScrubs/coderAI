@@ -2148,6 +2148,21 @@ class Handler(BaseHTTPRequestHandler):
                 skill_router.invalidate()
                 _send_json(self, {"ok": True, "name": skill.name, "skill_usage": _skill_usage_payload()})
                 return
+            if path in ("/api/project/delete", "/api/projects/delete"):
+                manager = _memory_manager()
+                project_id = data.get("project_id")
+                workspace_path = data.get("workspace_path")
+                deleted = False
+                if project_id is not None:
+                    deleted = manager.delete_project_by_id(int(project_id))
+                elif workspace_path:
+                    deleted = manager.delete_project_by_path(str(workspace_path))
+                _send_json(self, {
+                    "ok": True,
+                    "deleted": deleted,
+                    "projects": _project_cards(manager),
+                })
+                return
             if path == "/api/memory/archive":
                 manager = _memory_manager()
                 project_id = data.get("project_id")

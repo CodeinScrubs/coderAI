@@ -386,9 +386,45 @@ body.utility-mode .agent-panel {
 .projects-header h1, .project-home-header h1 { margin: 0; font-size: 22px; letter-spacing: 0; }
 .projects-header p { margin: 5px 0 0; color: var(--muted); }
 .project-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
-.project-card { display: grid; gap: 14px; width: 100%; min-width: 0; max-width: 100%; min-height: 178px; padding: 16px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); color: var(--text); text-align: left; overflow: hidden; }
+.project-card { display: grid; gap: 14px; width: 100%; min-width: 0; max-width: 100%; min-height: 178px; padding: 16px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); color: var(--text); text-align: left; overflow: hidden; position: relative; }
 .project-card:hover { border-color: var(--line-strong); background: var(--panel-2); }
-.project-card-head { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; overflow: hidden; }
+.project-card-actions {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  opacity: 0;
+  transition: opacity .15s ease;
+  z-index: 2;
+}
+.project-card:hover .project-card-actions {
+  opacity: 1;
+}
+.project-card-delete-btn {
+  width: 26px !important;
+  height: 26px !important;
+  padding: 0 !important;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-sm);
+  background: var(--panel-3) !important;
+  color: var(--muted) !important;
+  border: 1px solid var(--line) !important;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+.project-card-delete-btn:hover {
+  background: var(--danger-soft) !important;
+  color: var(--danger) !important;
+  border-color: rgba(244,135,113,.45) !important;
+}
+.project-home-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.project-card-head { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; overflow: hidden; padding-right: 28px; }
 .project-card-icon { display: grid; place-items: center; flex: 0 0 30px; width: 30px; height: 30px; color: var(--accent-dim); }
 .project-card-icon svg { width: 24px; height: 24px; }
 .project-card-title { width: 0; min-width: 0; max-width: 100%; flex: 1 1 auto; overflow: hidden; }

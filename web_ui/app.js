@@ -439,18 +439,55 @@ async function showProjects() {
   renderProjectCards();
 }
 
+async function deleteProject(projectId, projectName) {
+  const confirmed = confirm(`Are you sure you want to remove project "${projectName || 'this project'}" from the workspace list?`);
+  if (!confirmed) return;
+  try {
+    const res = await api("/api/project/delete", {
+      method: "POST",
+      body: JSON.stringify({ project_id: projectId }),
+    });
+    state.projectCards = res.projects || [];
+    renderProjectCards();
+    if ($("projectHome").classList.contains("active")) {
+      $("projectHome").classList.remove("active");
+      $("projectsIndex").classList.remove("hidden");
+    }
+  } catch (err) {
+    alert(`Failed to delete project: ${err.message}`);
+  }
+}
+
 function renderProjectCards() {
   $("projectCards").innerHTML = state.projectCards.map((project) => {
     const dirty = Number(project.git?.files?.length || 0);
     const gitClass = dirty ? "git-dirty" : "git-clean";
     const gitText = project.git?.is_repo ? `${dirty ? `${dirty} changes` : "Git clean"} · ${project.git.commits || 0} commits` : "Git disabled";
-    return `<button type="button" class="project-card" data-project-id="${Number(project.id)}">
+    return `<div class="project-card" data-project-id="${Number(project.id)}" role="button" tabindex="0">
+      <div class="project-card-actions">
+        <button type="button" class="project-card-delete-btn" data-project-id="${Number(project.id)}" data-project-name="${escapeHtml(project.name)}" title="Remove project">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+        </button>
+      </div>
       <div class="project-card-head"><span class="project-card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg></span><span class="project-card-title"><strong>${escapeHtml(project.name)}</strong><code>${escapeHtml(project.workspace_path)}</code></span></div>
       <div class="project-card-badges"><span class="project-badge ${gitClass}">${escapeHtml(gitText)}</span><span class="project-badge ${project.agent_status === "running" ? "running" : ""}">${escapeHtml(project.agent_status)}</span></div>
       <div class="project-card-footer"><span>${project.sessions || 0} sessions · ${project.stats?.files || 0} files · ${formatSize(Number(project.stats?.kb || 0) * 1024)}</span><span>${formatRelativeTime(project.last_session_at || project.last_opened_at)}</span></div>
-    </button>`;
+    </div>`;
   }).join("") || `<div class="memory-item-source">No projects yet. Use + New to add a workspace.</div>`;
-  document.querySelectorAll(".project-card").forEach((button) => button.addEventListener("click", () => openProjectHome(Number(button.dataset.projectId))));
+
+  document.querySelectorAll(".project-card").forEach((card) => {
+    card.addEventListener("click", (e) => {
+      if (e.target.closest(".project-card-delete-btn")) return;
+      openProjectHome(Number(card.dataset.projectId));
+    });
+  });
+
+  document.querySelectorAll(".project-card-delete-btn").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      deleteProject(Number(btn.dataset.projectId), btn.dataset.projectName);
+    });
+  });
 }
 
 async function openProjectHome(projectId) {
@@ -463,6 +500,9 @@ async function openProjectHome(projectId) {
   $("projectHomePath").textContent = card.workspace_path || "";
   $("projectSettingsPath").textContent = card.workspace_path || "";
   $("projectSettingsGit").textContent = card.git?.is_repo ? `${card.git.branch || "Git"} · ${card.git.files?.length || 0} changes` : "Disabled";
+  if ($("deleteProjectBtn")) {
+    $("deleteProjectBtn").onclick = () => deleteProject(projectId, card.name);
+  }
   renderProjectHome();
   activateProjectTab("overview");
 }

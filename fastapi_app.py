@@ -118,6 +118,24 @@ def create_app() -> FastAPI:
             "state": web_app._client_state(),
         }
 
+    @app.post("/api/project/delete")
+    @app.delete("/api/project")
+    async def delete_project(request: Request):
+        data = await request.json()
+        manager = web_app._memory_manager()
+        project_id = data.get("project_id")
+        workspace_path = data.get("workspace_path")
+        deleted = False
+        if project_id is not None:
+            deleted = manager.delete_project_by_id(int(project_id))
+        elif workspace_path:
+            deleted = manager.delete_project_by_path(str(workspace_path))
+        return {
+            "ok": True,
+            "deleted": deleted,
+            "projects": web_app._project_cards(manager),
+        }
+
     @app.post("/api/workspace")
     async def activate_workspace(request: Request):
         data = await request.json()

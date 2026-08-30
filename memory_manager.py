@@ -150,6 +150,28 @@ class MemoryManager:
             ).fetchone()
         return dict(row) if row else None
 
+    def delete_project_by_id(self, project_id: int) -> bool:
+        with self._write_lock, self._connect() as db:
+            if self.vector_store == "sqlite-fts5":
+                db.execute("DELETE FROM facts_fts WHERE project_id=?", (str(project_id),))
+            cursor = db.execute("DELETE FROM projects WHERE id=?", (int(project_id),))
+            deleted = cursor.rowcount > 0
+        self._audit("delete_project", {"target_project_id": int(project_id)})
+        return deleted
+
+    def delete_project_by_path(self, workspace_path: str) -> bool:
+        with self._write_lock, self._connect() as db:
+            row = db.execute("SELECT id FROM projects WHERE workspace_path=?", (str(workspace_path),)).fetchone()
+            if not row:
+                return False
+            project_id = int(row[0])
+            if self.vector_store == "sqlite-fts5":
+                db.execute("DELETE FROM facts_fts WHERE project_id=?", (str(project_id),))
+            cursor = db.execute("DELETE FROM projects WHERE id=?", (project_id,))
+            deleted = cursor.rowcount > 0
+        self._audit("delete_project", {"target_project_id": project_id, "workspace_path": str(workspace_path)})
+        return deleted
+
     def list_sessions(self, project_id: int | None = None, limit: int = 100) -> list[dict]:
         selected_project = int(project_id or self.project_id)
         with self._connect() as db:
