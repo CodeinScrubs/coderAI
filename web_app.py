@@ -28,6 +28,7 @@ from prompt_manager import get_prompt_manager
 from skills_manager import get_skills_manager
 from git_manager import GitManager, GitError
 from memory_manager import MemoryManager
+from memory_graph import GraphMemoryStore
 from skill_tracker import SkillTracker
 from skill_router import SkillRouter
 from codebase_index import CodebaseIndex
@@ -421,6 +422,11 @@ def _memory_manager() -> MemoryManager:
     return MemoryManager(get_workspace())
 
 
+def _graph_memory_store(workspace_path: str | Path | None = None) -> GraphMemoryStore:
+    ws = Path(workspace_path or STATE.get("workspace_path") or get_workspace()).resolve()
+    return GraphMemoryStore(ws)
+
+
 def _memory_payload() -> dict:
     try:
         manager = _memory_manager()
@@ -433,9 +439,10 @@ def _memory_payload() -> dict:
             "session_id": STATE.get("memory_session_id", ""),
             "projects": _project_cards(manager),
             "sessions": manager.list_sessions(),
+            "graph": _graph_memory_store().get_stats(),
         }
     except Exception as exc:
-        return {"stats": {}, "facts": [], "preferences": {}, "retrieval_count": 0, "retrieved_facts": [], "error": str(exc)}
+        return {"stats": {}, "facts": [], "preferences": {}, "retrieval_count": 0, "retrieved_facts": [], "graph": {}, "error": str(exc)}
 
 
 def _project_cards(manager: MemoryManager | None = None) -> list[dict]:
@@ -454,25 +461,39 @@ def _persistent_memory_context(query: str) -> str:
         STATE["memory_context"] = ""
         return ""
     try:
+        sections = []
+        # 1. Knowledge Graph (KG-RAG) Context
+        try:
+            kg_context = _graph_memory_store().retrieve_context(query, token_budget=400)
+            if kg_context:
+                sections.append(kg_context.strip())
+        except Exception:
+            pass
+
+        # 2. Semantic Facts & Preferences
         manager = _memory_manager()
         preferences = manager.get_user_preferences()
         facts = manager.retrieve_relevant(query, top_k=5)
         summaries = manager.load_recent_summaries(STATE.get("memory_session_id", ""), limit=2)
         STATE["memory_retrieval_count"] = len(facts)
         STATE["memory_retrieved_facts"] = facts
-        sections = ["[Persistent workspace memory]"]
+        
+        mem_sections = ["[Persistent workspace memory]"]
         if preferences:
-            sections.append("User preferences:\n" + "\n".join(f"- {key}: {value}" for key, value in preferences.items()))
+            mem_sections.append("User preferences:\n" + "\n".join(f"- {key}: {value}" for key, value in preferences.items()))
         if facts:
-            sections.append("Relevant project facts:\n" + "\n".join(f"- {item['fact']} (source: {item['source'] or 'memory'})" for item in facts))
+            mem_sections.append("Relevant project facts:\n" + "\n".join(f"- {item['fact']} (source: {item['source'] or 'memory'})" for item in facts))
         if summaries:
             summary_text = "\n\n".join(item["summary"] for item in summaries)
-            sections.append("Older session summaries:\n" + _clip_for_context(summary_text, 3000))
-        if len(sections) == 1:
+            mem_sections.append("Older session summaries:\n" + _clip_for_context(summary_text, 3000))
+        if len(mem_sections) > 1:
+            sections.append("\n\n".join(mem_sections))
+
+        if not sections:
             STATE["memory_context"] = ""
             return ""
         sections.append("Treat current workspace files and the current user request as more authoritative than memory.")
-        context = _clip_for_context("\n\n".join(sections), 6000)
+        context = _clip_for_context("\n\n".join(sections), 7000)
         STATE["memory_context"] = context
         return context
     except Exception:
@@ -527,6 +548,10 @@ def _save_memory_turn(role: str, content: str, tool_calls: list | None = None) -
         _memory_manager().save_turn(STATE["memory_session_id"], role, content, tool_calls)
     except Exception:
         pass
+    try:
+        _graph_memory_store().ingest_turn_async(role, content, source_ref=STATE.get("memory_session_id", "default"))
+    except Exception:
+        pass
 
 
 def _index_tool_memory(tools_done: list[dict]) -> None:
@@ -546,6 +571,19 @@ def _index_tool_memory(tools_done: list[dict]) -> None:
             result = str(item.get("result") or "")
             if name in labels and path and not result.lower().startswith(("error", "execution rejected", "no replacements")):
                 manager.index_fact(labels[name].format(path=path), source=path)
+    except Exception:
+        pass
+    try:
+        kg = _graph_memory_store()
+        for item in tools_done:
+            name = item.get("name")
+            path = str((item.get("args") or {}).get("path") or "").strip()
+            result = str(item.get("result") or "")
+            if path and not result.lower().startswith(("error", "execution rejected", "no replacements")):
+                if name in ("write_file", "replace_in_file", "append_file"):
+                    kg.add_fact("Agent", "modified_file", path, confidence=1.0, subject_type="agent", object_type="file")
+                elif name == "delete_file":
+                    kg.add_fact("Agent", "deleted_file", path, confidence=1.0, subject_type="agent", object_type="file")
     except Exception:
         pass
 
@@ -1932,6 +1970,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/memory":
             _send_json(self, _memory_payload())
             return
+        if path == "/api/memory/graph/stats":
+            _send_json(self, _graph_memory_store().get_stats())
+            return
+        if path == "/api/memory/graph/search":
+            q = parse_qs(parsed.query).get("q", [""])[0]
+            _send_json(self, _graph_memory_store().search(q))
+            return
         if path == "/api/index":
             _send_json(self, CodebaseIndex(get_workspace()).status(check_freshness=True))
             return
@@ -2162,6 +2207,26 @@ class Handler(BaseHTTPRequestHandler):
                     "deleted": deleted,
                     "projects": _project_cards(manager),
                 })
+                return
+            if path == "/api/memory/graph/forget":
+                entity = str(data.get("entity") or data.get("entity_id") or "").strip()
+                deleted = _graph_memory_store().forget_entity(entity)
+                _send_json(self, {"ok": True, "deleted": deleted, "stats": _graph_memory_store().get_stats()})
+                return
+            if path == "/api/memory/graph/fact":
+                sub = str(data.get("subject") or "").strip()
+                rel = str(data.get("relation") or "").strip()
+                obj = str(data.get("object") or "").strip()
+                conf = float(data.get("confidence", 1.0))
+                fact = _graph_memory_store().add_fact(sub, rel, obj, confidence=conf)
+                _send_json(self, {"ok": True, "fact": {"id": fact.id, "text": fact.fact_text}, "stats": _graph_memory_store().get_stats()})
+                return
+            if path == "/api/memory/graph/extract":
+                text = str(data.get("text") or "").strip()
+                triples = _graph_memory_store().extract_triples_rule_based(text)
+                for item in triples:
+                    _graph_memory_store().add_fact(item["subject"], item["relation"], item["object"], confidence=item.get("confidence", 0.9))
+                _send_json(self, {"ok": True, "extracted": len(triples), "triples": triples, "stats": _graph_memory_store().get_stats()})
                 return
             if path == "/api/memory/archive":
                 manager = _memory_manager()

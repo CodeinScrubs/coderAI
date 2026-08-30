@@ -107,6 +107,40 @@ def create_app() -> FastAPI:
     async def get_skills_usage():
         return web_app._skill_usage_payload()
 
+    @app.get("/api/memory/graph/stats")
+    async def get_graph_stats():
+        return web_app._graph_memory_store().get_stats()
+
+    @app.get("/api/memory/graph/search")
+    async def search_graph(q: str = ""):
+        return web_app._graph_memory_store().search(q)
+
+    @app.post("/api/memory/graph/forget")
+    async def forget_graph_entity(request: Request):
+        data = await request.json()
+        entity = str(data.get("entity") or data.get("entity_id") or "").strip()
+        deleted = web_app._graph_memory_store().forget_entity(entity)
+        return {"ok": True, "deleted": deleted, "stats": web_app._graph_memory_store().get_stats()}
+
+    @app.post("/api/memory/graph/fact")
+    async def add_graph_fact(request: Request):
+        data = await request.json()
+        sub = str(data.get("subject") or "").strip()
+        rel = str(data.get("relation") or "").strip()
+        obj = str(data.get("object") or "").strip()
+        conf = float(data.get("confidence", 1.0))
+        fact = web_app._graph_memory_store().add_fact(sub, rel, obj, confidence=conf)
+        return {"ok": True, "fact": {"id": fact.id, "text": fact.fact_text}, "stats": web_app._graph_memory_store().get_stats()}
+
+    @app.post("/api/memory/graph/extract")
+    async def extract_graph_triples(request: Request):
+        data = await request.json()
+        text = str(data.get("text") or "").strip()
+        triples = web_app._graph_memory_store().extract_triples_rule_based(text)
+        for item in triples:
+            web_app._graph_memory_store().add_fact(item["subject"], item["relation"], item["object"], confidence=item.get("confidence", 0.9))
+        return {"ok": True, "extracted": len(triples), "triples": triples, "stats": web_app._graph_memory_store().get_stats()}
+
     @app.post("/api/cancel")
     async def cancel_execution():
         killed = cancel_current_execution()
