@@ -1799,6 +1799,168 @@ $("chatForm").addEventListener("submit", async (event) => {
   await sendPrompt(prompt);
 });
 
+function initPanelResizersAndToggles() {
+  const layout = $("mainLayout") || document.querySelector(".layout");
+  const leftPanel = $("workspacePanel") || document.querySelector(".workspace-panel");
+  const rightPanel = $("agentPanel") || document.querySelector(".agent-panel");
+  const resizerLeft = $("resizerLeft");
+  const resizerRight = $("resizerRight");
+
+  const toggleLeftBtn = $("toggleLeftSidebar");
+  const toggleRightBtn = $("toggleRightSidebar");
+  const collapseLeftBtn = $("collapseWorkspacePanel");
+  const collapseRightBtn = $("collapseAgentPanel");
+  const restoreLeftBtn = $("restoreWorkspaceBtn");
+  const restoreRightBtn = $("restoreAgentBtn");
+
+  // Restore saved widths from localStorage
+  try {
+    const savedWidths = JSON.parse(localStorage.getItem("coderai_panel_widths") || "{}");
+    if (savedWidths.left) {
+      document.documentElement.style.setProperty("--left-panel-width", `${savedWidths.left}px`);
+    }
+    if (savedWidths.right) {
+      document.documentElement.style.setProperty("--right-panel-width", `${savedWidths.right}px`);
+    }
+  } catch (_) {}
+
+  function setLeftPanelVisible(visible) {
+    if (leftPanel) leftPanel.classList.toggle("collapsed", !visible);
+    if (resizerLeft) resizerLeft.classList.toggle("hidden", !visible);
+    if (toggleLeftBtn) toggleLeftBtn.classList.toggle("active", visible);
+    if (restoreLeftBtn) restoreLeftBtn.style.display = visible ? "none" : "inline-flex";
+    savePanelVisibility();
+  }
+
+  function setRightPanelVisible(visible) {
+    if (rightPanel) rightPanel.classList.toggle("collapsed", !visible);
+    if (resizerRight) resizerRight.classList.toggle("hidden", !visible);
+    if (toggleRightBtn) toggleRightBtn.classList.toggle("active", visible);
+    if (restoreRightBtn) restoreRightBtn.style.display = visible ? "none" : "inline-flex";
+    savePanelVisibility();
+  }
+
+  function savePanelVisibility() {
+    try {
+      const vis = {
+        left: !leftPanel?.classList.contains("collapsed"),
+        right: !rightPanel?.classList.contains("collapsed"),
+      };
+      localStorage.setItem("coderai_panel_visibility", JSON.stringify(vis));
+    } catch (_) {}
+  }
+
+  // Restore saved visibility
+  try {
+    const savedVis = JSON.parse(localStorage.getItem("coderai_panel_visibility") || "{}");
+    if (savedVis.left === false) {
+      setLeftPanelVisible(false);
+    }
+    if (savedVis.right === false) {
+      setRightPanelVisible(false);
+    }
+  } catch (_) {}
+
+  // Toggle button listeners
+  if (toggleLeftBtn) {
+    toggleLeftBtn.addEventListener("click", () => {
+      const isCollapsed = leftPanel?.classList.contains("collapsed");
+      setLeftPanelVisible(isCollapsed);
+    });
+  }
+  if (collapseLeftBtn) {
+    collapseLeftBtn.addEventListener("click", () => setLeftPanelVisible(false));
+  }
+  if (restoreLeftBtn) {
+    restoreLeftBtn.addEventListener("click", () => setLeftPanelVisible(true));
+  }
+
+  if (toggleRightBtn) {
+    toggleRightBtn.addEventListener("click", () => {
+      const isCollapsed = rightPanel?.classList.contains("collapsed");
+      setRightPanelVisible(isCollapsed);
+    });
+  }
+  if (collapseRightBtn) {
+    collapseRightBtn.addEventListener("click", () => setRightPanelVisible(false));
+  }
+  if (restoreRightBtn) {
+    restoreRightBtn.addEventListener("click", () => setRightPanelVisible(true));
+  }
+
+  // Pointer-based draggable resizers
+  function setupDraggableSplitter(resizer, onDrag) {
+    if (!resizer) return;
+
+    const onPointerMove = (e) => {
+      onDrag(e);
+    };
+
+    const onPointerUp = () => {
+      resizer.classList.remove("is-dragging");
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+    };
+
+    resizer.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      resizer.classList.add("is-dragging");
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp);
+    });
+  }
+
+  if (resizerLeft && layout) {
+    setupDraggableSplitter(resizerLeft, (e) => {
+      const layoutRect = layout.getBoundingClientRect();
+      const newWidth = Math.max(220, Math.min(650, e.clientX - layoutRect.left));
+      document.documentElement.style.setProperty("--left-panel-width", `${newWidth}px`);
+      try {
+        const widths = JSON.parse(localStorage.getItem("coderai_panel_widths") || "{}");
+        widths.left = newWidth;
+        localStorage.setItem("coderai_panel_widths", JSON.stringify(widths));
+      } catch (_) {}
+    });
+  }
+
+  if (resizerRight && layout) {
+    setupDraggableSplitter(resizerRight, (e) => {
+      const layoutRect = layout.getBoundingClientRect();
+      const newWidth = Math.max(280, Math.min(850, layoutRect.right - e.clientX));
+      document.documentElement.style.setProperty("--right-panel-width", `${newWidth}px`);
+      try {
+        const widths = JSON.parse(localStorage.getItem("coderai_panel_widths") || "{}");
+        widths.right = newWidth;
+        localStorage.setItem("coderai_panel_widths", JSON.stringify(widths));
+      } catch (_) {}
+    });
+  }
+
+  // Keyboard shortcuts (Ctrl+B for left panel, Ctrl+J for chat panel)
+  document.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b" && !e.shiftKey && !e.altKey) {
+      if (document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "TEXTAREA") {
+        return;
+      }
+      e.preventDefault();
+      const isCollapsed = leftPanel?.classList.contains("collapsed");
+      setLeftPanelVisible(isCollapsed);
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "j" && !e.shiftKey && !e.altKey) {
+      if (document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "TEXTAREA") {
+        return;
+      }
+      e.preventDefault();
+      const isCollapsed = rightPanel?.classList.contains("collapsed");
+      setRightPanelVisible(isCollapsed);
+    }
+  });
+}
+
+initPanelResizersAndToggles();
 installEditorMetricStyles();
 updateGitAuthPanel();
 refresh().catch((err) => {

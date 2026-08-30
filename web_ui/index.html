@@ -42,6 +42,13 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
           Commands
         </button>
+        <div class="top-divider"></div>
+        <button id="toggleLeftSidebar" type="button" class="ghost panel-toggle-btn active" title="Toggle Workspace & Options panel (Ctrl+B)" aria-label="Toggle Left Panel">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
+        </button>
+        <button id="toggleRightSidebar" type="button" class="ghost panel-toggle-btn active" title="Toggle Chat & Agent panel (Ctrl+J)" aria-label="Toggle Right Panel">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>
+        </button>
       </div>
     </header>
 
@@ -68,8 +75,8 @@
         </button>
       </nav>
 
-      <main class="layout">
-        <aside class="workspace-panel">
+      <main class="layout" id="mainLayout">
+        <aside class="workspace-panel" id="workspacePanel">
         <section class="panel-head">
           <div>
             <h1>
@@ -78,10 +85,15 @@
             </h1>
             <p>Project files and generated artifacts</p>
           </div>
-          <button id="scanBtn" type="button" class="primary">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-            Scan
-          </button>
+          <div class="head-actions">
+            <button id="scanBtn" type="button" class="primary">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+              Scan
+            </button>
+            <button id="collapseWorkspacePanel" type="button" class="ghost icon-only" title="Hide Workspace panel" aria-label="Hide panel">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
+            </button>
+          </div>
         </section>
 
         <section class="path-row">
@@ -308,11 +320,18 @@
         </section>
       </aside>
 
-      <section class="editor-panel">
+      <div class="panel-resizer resizer-left" id="resizerLeft" title="Drag to resize Workspace panel"></div>
+
+      <section class="editor-panel" id="editorPanel">
         <div class="editor-head">
-          <div>
-            <h2 id="activeFile">No file selected</h2>
-            <span id="fileMeta">Choose a file from the workspace</span>
+          <div class="editor-title-group">
+            <button id="restoreWorkspaceBtn" type="button" class="ghost icon-only restore-panel-btn" style="display:none" title="Show Workspace panel" aria-label="Show Workspace panel">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
+            </button>
+            <div>
+              <h2 id="activeFile">No file selected</h2>
+              <span id="fileMeta">Choose a file from the workspace</span>
+            </div>
           </div>
           <div class="editor-actions">
             <button id="showCodeTab" type="button" class="editor-tab active">Code</button>
@@ -325,6 +344,9 @@
             <button id="attachFile" type="button" class="ghost" disabled>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4"/><path d="M12 17v4"/><path d="M3 12h4"/><path d="M17 12h4"/><path d="m5.6 5.6 2.8 2.8"/><path d="m15.6 15.6 2.8 2.8"/><path d="m18.4 5.6-2.8 2.8"/><path d="m8.4 15.6-2.8 2.8"/></svg>
               Ask AI
+            </button>
+            <button id="restoreAgentBtn" type="button" class="ghost icon-only restore-panel-btn" style="display:none" title="Show Chat panel" aria-label="Show Chat panel">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>
             </button>
           </div>
         </div>
@@ -363,7 +385,9 @@
         </div>
       </section>
 
-      <aside class="agent-panel">
+      <div class="panel-resizer resizer-right" id="resizerRight" title="Drag to resize Chat panel"></div>
+
+      <aside class="agent-panel" id="agentPanel">
         <section class="agent-head">
           <div>
             <h1>
@@ -373,15 +397,20 @@
             <p>Explanations, tool calls, and reports</p>
             <span id="memoryUsageIndicator" class="memory-indicator"></span>
           </div>
-          <div id="tokenMeter" class="token-meter" title="Context window usage">
-            <div class="token-meter-row">
-              <span>Context</span>
-              <strong id="tokenPercent">0%</strong>
+          <div class="agent-head-right">
+            <div id="tokenMeter" class="token-meter" title="Context window usage">
+              <div class="token-meter-row">
+                <span>Context</span>
+                <strong id="tokenPercent">0%</strong>
+              </div>
+              <div class="token-bar">
+                <span id="tokenBarFill"></span>
+              </div>
+              <span id="tokenDetails">0 / 0 tokens</span>
             </div>
-            <div class="token-bar">
-              <span id="tokenBarFill"></span>
-            </div>
-            <span id="tokenDetails">0 / 0 tokens</span>
+            <button id="collapseAgentPanel" type="button" class="ghost icon-only" title="Hide Chat panel" aria-label="Hide panel">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>
+            </button>
           </div>
         </section>
         <section id="messages" class="messages"></section>
