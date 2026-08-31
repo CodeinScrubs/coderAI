@@ -962,11 +962,48 @@ p, .editor-head span { color: var(--muted); font-size: 11px; }
   white-space: pre-wrap;
   line-height: 1.65;
   font-size: 13px;
+  unicode-bidi: plaintext;
 }
 .message.user { border-left-color: var(--teal); background: #20312f; }
 .message.assistant { border-left-color: var(--accent-dim); }
 .message.assistant .role { color: var(--accent-dim); }
 .message.user .role { color: var(--teal); }
+
+.message[dir="rtl"],
+.message.rtl {
+  direction: rtl;
+  text-align: right;
+  font-family: "Vazirmatn", "Segoe UI", Tahoma, -apple-system, sans-serif;
+  border-left: 1px solid var(--line);
+  border-right: 3px solid var(--line-strong);
+}
+.message.user[dir="rtl"],
+.message.user.rtl { border-left-color: var(--line); border-right-color: var(--teal); }
+.message.assistant[dir="rtl"],
+.message.assistant.rtl { border-left-color: var(--line); border-right-color: var(--accent-dim); }
+
+.message[dir="rtl"] .role,
+.message.rtl .role {
+  flex-direction: row-reverse;
+  justify-content: flex-start;
+}
+
+.message[dir="rtl"] .tool-box,
+.message.rtl .tool-box,
+.message[dir="rtl"] pre,
+.message.rtl pre,
+.message[dir="rtl"] code,
+.message.rtl code {
+  direction: ltr;
+  text-align: left;
+  unicode-bidi: embed;
+}
+
+.message[dir="ltr"],
+.message.ltr {
+  direction: ltr;
+  text-align: left;
+}
 
 .message .role {
   display: flex;
@@ -1093,7 +1130,9 @@ p, .editor-head span { color: var(--muted); font-size: 11px; }
 }
 
 .composer { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 8px; border-top: 0; align-items: end; background: transparent; }
-.composer textarea { height: 56px; min-height: 44px; max-height: 220px; direction: auto; background: #1b1b1c; }
+.composer textarea { height: 56px; min-height: 44px; max-height: 220px; unicode-bidi: plaintext; background: #1b1b1c; }
+.composer textarea[dir="rtl"], .composer textarea.rtl { direction: rtl; text-align: right; font-family: "Vazirmatn", "Segoe UI", Tahoma, -apple-system, sans-serif; }
+.composer textarea[dir="ltr"], .composer textarea.ltr { direction: ltr; text-align: left; }
 .composer button { height: 100%; min-height: 44px; padding: 0 16px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 
 .statusbar {

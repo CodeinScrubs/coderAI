@@ -1016,6 +1016,15 @@ function renderPrompts() {
   });
 }
 
+function isRTL(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return false;
+  const clean = trimmed.replace(/[\d\s.,!?:;"'()\[\]{}<>\/\\@#$%^&*_+=~`|-]/g, "");
+  if (!clean) return false;
+  const rtlChars = clean.match(/[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/g) || [];
+  return (rtlChars.length / clean.length) > 0.2;
+}
+
 function renderMessages() {
   const messages = state.data?.messages || [];
   const toolsLog = state.data?.tools_log || [];
@@ -1029,8 +1038,10 @@ function renderMessages() {
     const toolHtml = tools.length ? `<div class="tool-box">${escapeHtml(tools.map((t) =>
       `${t.name}(${JSON.stringify(t.args || {})})\n${String(t.result || "").slice(0, 1200)}`
     ).join("\n\n"))}</div>` : "";
+    const isMsgRTL = isRTL(msg.content);
+    const dirAttr = isMsgRTL ? "rtl" : "ltr";
     return `
-      <article class="message ${msg.role}">
+      <article class="message ${msg.role} ${dirAttr}" dir="${dirAttr}">
         <span class="role">${msg.role}</span>
         ${skillHtml}
         ${renderMessageContent(msg)}
@@ -1653,6 +1664,13 @@ async function sendPrompt(prompt) {
     appendToken: (chunk) => {
       streamText += chunk;
       streamTarget.textContent = streamText;
+      const isPersian = isRTL(streamText);
+      const article = streamTarget.closest("article");
+      if (article) {
+        article.setAttribute("dir", isPersian ? "rtl" : "ltr");
+        article.classList.toggle("rtl", isPersian);
+        article.classList.toggle("ltr", !isPersian);
+      }
       updateGeneratedCodeFromStreaming(streamText);
       $("messages").scrollTop = $("messages").scrollHeight;
     },
@@ -1830,12 +1848,21 @@ $("codeEditor").addEventListener("input", () => {
 $("codeEditor").addEventListener("scroll", () => {
   syncEditorHighlightScroll();
 });
-$("promptInput").addEventListener("input", updateTokenUsage);
+$("promptInput").addEventListener("input", (e) => {
+  updateTokenUsage();
+  const isPersian = isRTL(e.target.value);
+  e.target.setAttribute("dir", isPersian ? "rtl" : "ltr");
+  e.target.classList.toggle("rtl", isPersian);
+  e.target.classList.toggle("ltr", !isPersian);
+});
 $("chatForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const prompt = $("promptInput").value.trim();
   if (!prompt) return;
   $("promptInput").value = "";
+  $("promptInput").setAttribute("dir", "auto");
+  $("promptInput").classList.remove("rtl");
+  $("promptInput").classList.add("ltr");
   updateTokenUsage();
   await sendPrompt(prompt);
 });
