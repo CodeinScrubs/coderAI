@@ -1848,10 +1848,6 @@ function initPanelResizersAndToggles() {
 
   const toggleLeftBtn = $("toggleLeftSidebar");
   const toggleRightBtn = $("toggleRightSidebar");
-  const collapseLeftBtn = $("collapseWorkspacePanel");
-  const collapseRightBtn = $("collapseAgentPanel");
-  const restoreLeftBtn = $("restoreWorkspaceBtn");
-  const restoreRightBtn = $("restoreAgentBtn");
 
   // Restore saved widths from localStorage
   try {
@@ -1868,7 +1864,6 @@ function initPanelResizersAndToggles() {
     if (leftPanel) leftPanel.classList.toggle("collapsed", !visible);
     if (resizerLeft) resizerLeft.classList.toggle("hidden", !visible);
     if (toggleLeftBtn) toggleLeftBtn.classList.toggle("active", visible);
-    if (restoreLeftBtn) restoreLeftBtn.style.display = visible ? "none" : "inline-flex";
     savePanelVisibility();
   }
 
@@ -1876,7 +1871,6 @@ function initPanelResizersAndToggles() {
     if (rightPanel) rightPanel.classList.toggle("collapsed", !visible);
     if (resizerRight) resizerRight.classList.toggle("hidden", !visible);
     if (toggleRightBtn) toggleRightBtn.classList.toggle("active", visible);
-    if (restoreRightBtn) restoreRightBtn.style.display = visible ? "none" : "inline-flex";
     savePanelVisibility();
   }
 
@@ -1901,18 +1895,12 @@ function initPanelResizersAndToggles() {
     }
   } catch (_) {}
 
-  // Toggle button listeners
+  // The TWO dedicated toggle button listeners
   if (toggleLeftBtn) {
     toggleLeftBtn.addEventListener("click", () => {
       const isCollapsed = leftPanel?.classList.contains("collapsed");
       setLeftPanelVisible(isCollapsed);
     });
-  }
-  if (collapseLeftBtn) {
-    collapseLeftBtn.addEventListener("click", () => setLeftPanelVisible(false));
-  }
-  if (restoreLeftBtn) {
-    restoreLeftBtn.addEventListener("click", () => setLeftPanelVisible(true));
   }
 
   if (toggleRightBtn) {
@@ -1920,12 +1908,6 @@ function initPanelResizersAndToggles() {
       const isCollapsed = rightPanel?.classList.contains("collapsed");
       setRightPanelVisible(isCollapsed);
     });
-  }
-  if (collapseRightBtn) {
-    collapseRightBtn.addEventListener("click", () => setRightPanelVisible(false));
-  }
-  if (restoreRightBtn) {
-    restoreRightBtn.addEventListener("click", () => setRightPanelVisible(true));
   }
 
   // Pointer-based draggable resizers
