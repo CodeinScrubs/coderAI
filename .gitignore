@@ -1,58 +1,72 @@
-# Python
+# Python bytecode & cache
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
 .Python
+.pytest_cache/
+.pytest_tmp/
+
+# Virtual environments
 .venv/
 venv/
 env/
 ENV/
+env.bak/
+venv.bak/
 
-# Build and release outputs
+# Build, PyInstaller & packaging outputs
 build/
 dist/
 release/
 releases/
+Output/
 *.exe
+*.msi
+*.iss
 *.spec
 *.spec.bak
 
-# Installer outputs
-*.msi
-*.iss
-Output/
-
-# Logs and temp files
+# Logs & temp files
 *.log
+.*.log
+*.log.*
 *.tmp
 *.bak
 *.swp
 *.swo
 
-# Local runtime state
+# Local runtime state & database storage
 .agents/
 .codex/
 .agent_memory/
 agent_workspace/*
 !agent_workspace/.gitkeep
+coderai_data/
+app-data/
+data/
+cache/
+core/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
 
-# Secrets and environment files
+# Secrets & environment configurations
 .env
 .env.*
 *.key
 *.pem
 
-# IDEs
+# IDEs & editors
 .vscode/
 .idea/
+*.sublime-project
+*.sublime-workspace
 
 # OS metadata
 Thumbs.db
 Desktop.ini
 .DS_Store
-
-# Local application archive
-coderai_data/
-.pytest_tmp/
-.pytest_cache/
