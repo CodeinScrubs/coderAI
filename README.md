@@ -16,26 +16,18 @@ The folder-based package may start faster and is usually better for future insta
 
 ## Features
 
-- Local Ollama model support with automatic model discovery.
-- OpenAI-compatible Custom API mode.
-- Project workspace browser with file preview.
-- Incremental graph-aware Codebase RAG with structural chunking, hierarchical summaries, hybrid retrieval, and local Ollama embeddings.
-- Dedicated Projects dashboard with workspace cards, Git state, file statistics, session counts, recent activity, and agent status.
-- Project Home views with Overview, Sessions, Files, Memory, Skills, and Settings tabs.
-- Git-backed agent checkpoints with reviewable diffs, automatic scoped commits, history, and safe revert commits.
-- Remote Git connection with streamed cloning, system/SSH/PAT authentication, push previews, and explicit approval before publishing changes.
-- Native folder picker for selecting a local project directory.
-- Agent tool calling for file reads, writes, replacement, search, project scans, shell commands, and Python snippets.
-- Optional Tavily web search tools, controlled from the Settings UI.
-- System prompt manager backed by Markdown files in `system_prompts/`.
-- Skill manager backed by `skills/**/SKILL.md`.
-- Transparent skill tracking with real-time selection badges, trigger reasons, per-project/global usage, success rates, and recent lifecycle events.
-- LangChain-backed model runtime for Ollama and OpenAI-compatible APIs, with a local HTTP fallback.
-- Streaming chat responses and live generated-code preview.
-- Context window usage meter with token estimates and percentage warnings.
-- Download button for generated or selected code.
-- Context compaction and LiteLLM-based token counting when available.
-- Central persistent archive with project-scoped conversations, searchable semantic facts, and user preferences.
+- **Local Ollama & Custom API Support**: Seamless integration with local Ollama models (with automatic model detection) and OpenAI-compatible endpoints.
+- **Interactive Schematic Architecture Graph**: Visual dependency and function call graph displayed directly below the file list. Double-click to expand to full-screen; click any node to jump directly to the file in the code editor.
+- **Bi-directional RTL / LTR Chat Support**: Automatic real-time language detection. Persian/Arabic text automatically aligns Right-to-Left (RTL) with proper Persian typography, while English and code snippets stay cleanly Left-to-Right (LTR).
+- **Interactive Slash Commands (`/`) for Skills**: Type `/` in the chat input to invoke a rich autocomplete popover listing all available engineering and productivity skills with keyboard (Up/Down/Enter) and mouse selection.
+- **Embedded Knowledge Graph Memory (KG-RAG)**: Local SQLite-based Knowledge Graph (`memory_graph.py`) with entity resolution, bi-temporal fact tracking, multi-hop relationship expansion, and automatic background workspace scanning/indexing.
+- **Project Workspace Management & Deletion**: Dedicated Projects dashboard with cards, Git status, session statistics, and the ability to safely remove/delete projects from the workspace registry.
+- **Streamlined Two-Button Sidebar Controls**: Clean topbar layout toggles for Left Workspace & Options (`Ctrl+B`) and Right Chat & Agent (`Ctrl+J`).
+- **Thread-Safe Backend & Direct NDJSON Streaming**: `STATE_LOCK` protected state management, fast streaming over `/api/chat_stream`, and detailed HTTP error decoding for Ollama model runtime diagnostics.
+- **Incremental Codebase RAG**: Structural AST chunking, hierarchical summaries, hybrid BM25 + vector search, and dependency graph routing.
+- **Git-backed Agent Checkpoints**: Reviewable diff previews before file edits, scoped commits, history tracking, and one-click rollback.
+- **Remote Git Integration**: Streamed cloning, SSH/PAT authentication, branch push previews, and explicit approval before publishing.
+- **Agent Sandbox & Security**: Safe tool execution boundaries, per-tool approval flows, and local Docker/subprocess sandboxing.
 
 ## Project Structure
 
@@ -46,8 +38,10 @@ The folder-based package may start faster and is usually better for future insta
 ├── launcher.py                 # EXE-friendly launcher that opens the browser
 ├── tools.py                    # Tool schemas and tool execution handlers
 ├── git_manager.py              # Git clone, diff, checkpoint, commit, push, and revert layer
+├── memory_graph.py             # Embedded Knowledge Graph (KG-RAG) memory subsystem
 ├── memory_manager.py           # SQLite episodic, semantic, and procedural memory
 ├── codebase_index.py           # Discovery, structural chunking, incremental hybrid code index
+├── syntax_chunker.py           # Syntax-aware AST chunking for Python and multi-language sources
 ├── project_intelligence.py     # Dependency graph, hierarchical summaries, and query routing
 ├── vector_store.py             # Shared local Ollama embedding and Chroma adapter
 ├── config.py                   # Runtime configuration and environment defaults
@@ -55,6 +49,7 @@ The folder-based package may start faster and is usually better for future insta
 ├── skills_manager.py           # Skill discovery, selection, and usage parsing
 ├── skill_router.py             # Fast, semantic, and optional LLM skill-selection funnel
 ├── skill_tracker.py            # Persistent selected/loaded/applied/failed skill events and analytics
+├── fastapi_app.py              # Optional FastAPI / ASGI WebSocket wrapper
 ├── web_ui/                     # Frontend HTML, CSS, and JavaScript
 ├── system_prompts/             # Markdown system prompts
 ├── skills/                     # Skill definitions
