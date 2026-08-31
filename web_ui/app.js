@@ -1699,13 +1699,7 @@ async function sendPrompt(prompt) {
   };
 
   try {
-    let usedWs = false;
-    try {
-      usedWs = await streamViaWebSocket(prompt, activeContext, ctx, controller);
-    } catch (wsErr) {
-      console.warn("WebSocket stream fallback to HTTP:", wsErr);
-      await streamViaHttp(prompt, activeContext, ctx, controller);
-    }
+    await streamViaHttp(prompt, activeContext, ctx, controller);
 
     if (sawDone) {
       await refreshEditorAfterDone();

@@ -17,6 +17,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1133,6 +1134,19 @@ def _post_json_stream(url: str, payload: dict, headers: dict | None = None):
 
 
 def _format_agent_error(exc: Exception) -> str:
+    error_detail = str(exc)
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            body = exc.read().decode("utf-8", errors="replace").strip()
+            if body:
+                try:
+                    parsed = json.loads(body)
+                    error_detail = parsed.get("error") or parsed.get("message") or body
+                except Exception:
+                    error_detail = body
+        except Exception:
+            pass
+
     if isinstance(exc, TimeoutError) or isinstance(exc, socket.timeout) or "timed out" in str(exc).lower():
         return (
             "Agent runtime error. The selected model did not return a response before the timeout.\n\n"
@@ -1141,7 +1155,7 @@ def _format_agent_error(exc: Exception) -> str:
         )
     return (
         "Agent runtime error. Make sure Ollama or the selected API endpoint is reachable.\n\n"
-        f"{exc}"
+        f"{error_detail}"
     )
 
 
