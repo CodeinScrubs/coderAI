@@ -1,3 +1,8 @@
+/* ══════════════════════════════════════════════════════════════════════════
+ * CoderAI Web Client - Modular Architecture
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── 1. GLOBAL STATE & SELECTOR HELPERS ─────────────────────────── */
 const state = {
   data: null,
   activeFile: null,

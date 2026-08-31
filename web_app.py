@@ -131,6 +131,8 @@ except Exception as exc:
     _litellm_model_cost = {}
     _litellm_import_error = repr(exc)
 
+STATE_LOCK = threading.RLock()
+
 STATE = {
     "messages": [],
     "tools_log": [],
@@ -169,6 +171,19 @@ STATE = {
     "code_rag_hits": [],
     "code_rag_type": "",
 }
+
+
+def get_state_snapshot() -> dict:
+    """Thread-safe snapshot of global state."""
+    with STATE_LOCK:
+        return dict(STATE)
+
+
+def update_state(updates: dict) -> None:
+    """Thread-safe batch update of global state."""
+    with STATE_LOCK:
+        STATE.update(updates)
+
 
 SETTINGS_PATH = ROOT / "coderai_data" / "settings.json"
 
