@@ -141,6 +141,16 @@ def create_app() -> FastAPI:
             web_app._graph_memory_store().add_fact(item["subject"], item["relation"], item["object"], confidence=item.get("confidence", 0.9))
         return {"ok": True, "extracted": len(triples), "triples": triples, "stats": web_app._graph_memory_store().get_stats()}
 
+    @app.post("/api/memory/graph/index")
+    @app.post("/api/project/index")
+    async def index_project_endpoint():
+        res = web_app._graph_memory_store().index_project_workspace()
+        try:
+            CodebaseIndex(web_app.get_workspace()).sync_incremental()
+        except Exception:
+            pass
+        return {"ok": True, "result": res}
+
     @app.post("/api/cancel")
     async def cancel_execution():
         killed = cancel_current_execution()

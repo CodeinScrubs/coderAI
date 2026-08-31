@@ -588,6 +588,31 @@ def _index_tool_memory(tools_done: list[dict]) -> None:
         pass
 
 
+def _auto_index_workspace_background(workspace_path: str | Path) -> None:
+    ws = Path(workspace_path).resolve()
+    def _worker():
+        try:
+            CodebaseIndex(ws).sync_incremental()
+            res = GraphMemoryStore(ws).index_project_workspace()
+            try:
+                mm = MemoryManager(ws)
+                if res.get("project_name"):
+                    p_name = res["project_name"]
+                    langs = ", ".join(res.get("languages", []))
+                    if langs:
+                        mm.index_fact(f"Project '{p_name}' primary languages: {langs}", source="auto_index")
+                    eps = ", ".join(res.get("entrypoints", []))
+                    if eps:
+                        mm.index_fact(f"Project '{p_name}' entrypoint files: {eps}", source="auto_index")
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_worker, daemon=True, name="AutoProjectIndex")
+    t.start()
+
+
 def _activate_workspace_memory(path: str | Path) -> tuple[bool, str]:
     old_workspace = get_workspace()
     try:
@@ -606,6 +631,7 @@ def _activate_workspace_memory(path: str | Path) -> tuple[bool, str]:
     STATE["messages"] = []
     STATE["tools_log"] = []
     STATE["used_skills_log"] = []
+    _auto_index_workspace_background(path)
     return True, message
 
 
@@ -2220,6 +2246,14 @@ class Handler(BaseHTTPRequestHandler):
                 conf = float(data.get("confidence", 1.0))
                 fact = _graph_memory_store().add_fact(sub, rel, obj, confidence=conf)
                 _send_json(self, {"ok": True, "fact": {"id": fact.id, "text": fact.fact_text}, "stats": _graph_memory_store().get_stats()})
+                return
+            if path in ("/api/memory/graph/index", "/api/project/index"):
+                res = _graph_memory_store().index_project_workspace()
+                try:
+                    CodebaseIndex(get_workspace()).sync_incremental()
+                except Exception:
+                    pass
+                _send_json(self, {"ok": True, "result": res})
                 return
             if path == "/api/memory/graph/extract":
                 text = str(data.get("text") or "").strip()

@@ -580,3 +580,163 @@ class GraphMemoryStore:
 
     def get_stats(self) -> dict:
         return self.backend.get_stats()
+
+    def index_project_workspace(self, force_refresh: bool = False) -> dict:
+        """
+        Automatically scan and index a project folder:
+        - Detects project name, dependencies, frameworks, languages, entrypoints.
+        - Parses README and configuration files into Knowledge Graph facts.
+        - Extracts key architectural modules and symbols.
+        - Returns indexing metrics and populated graph statistics.
+        """
+        if not self.workspace_path.exists() or not self.workspace_path.is_dir():
+            return {"error": "Workspace directory does not exist"}
+
+        from workspace_filter import iter_workspace_files
+
+        project_name = self.workspace_path.name
+        dependencies: list[str] = []
+        languages: set[str] = set()
+        entrypoints: list[str] = []
+        facts_added = 0
+
+        # 1. Inspect package.json
+        pkg_json = self.workspace_path / "package.json"
+        if pkg_json.is_file():
+            try:
+                data = json.loads(pkg_json.read_text(encoding="utf-8", errors="ignore"))
+                if data.get("name"):
+                    project_name = str(data["name"])
+                all_deps = {**data.get("dependencies", {}), **data.get("devDependencies", {})}
+                for dep in list(all_deps.keys())[:30]:
+                    dependencies.append(dep)
+                    self.add_fact(project_name, "uses", dep, confidence=1.0, subject_type="project", object_type="library")
+                    facts_added += 1
+                if data.get("main"):
+                    main_f = str(data["main"])
+                    entrypoints.append(main_f)
+                    self.add_fact(project_name, "has_entrypoint", main_f, confidence=1.0, subject_type="project", object_type="file")
+                    facts_added += 1
+                languages.add("JavaScript/TypeScript")
+            except Exception:
+                pass
+
+        # 2. Inspect Python configs (pyproject.toml, requirements.txt, setup.py)
+        req_txt = self.workspace_path / "requirements.txt"
+        if req_txt.is_file():
+            languages.add("Python")
+            try:
+                for line in req_txt.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    line = line.strip().split("#")[0].split("==")[0].split(">=")[0].split("<=")[0].strip()
+                    if line and not line.startswith("-"):
+                        dependencies.append(line)
+                        self.add_fact(project_name, "uses", line, confidence=1.0, subject_type="project", object_type="library")
+                        facts_added += 1
+            except Exception:
+                pass
+
+        pyproject = self.workspace_path / "pyproject.toml"
+        if pyproject.is_file():
+            languages.add("Python")
+            try:
+                content = pyproject.read_text(encoding="utf-8", errors="ignore")
+                for line in content.splitlines():
+                    if "name =" in line:
+                        name_match = re.search(r'name\s*=\s*["\']([^"\']+)["\']', line)
+                        if name_match:
+                            project_name = name_match.group(1)
+                            break
+            except Exception:
+                pass
+
+        # 3. Inspect Rust (Cargo.toml) / Go (go.mod)
+        cargo_toml = self.workspace_path / "Cargo.toml"
+        if cargo_toml.is_file():
+            languages.add("Rust")
+            try:
+                content = cargo_toml.read_text(encoding="utf-8", errors="ignore")
+                for line in content.splitlines():
+                    if "name =" in line:
+                        name_match = re.search(r'name\s*=\s*["\']([^"\']+)["\']', line)
+                        if name_match:
+                            project_name = name_match.group(1)
+                            break
+            except Exception:
+                pass
+
+        go_mod = self.workspace_path / "go.mod"
+        if go_mod.is_file():
+            languages.add("Go")
+
+        # 4. Resolve main project entity
+        proj_ent = self.resolve_entity(project_name, entity_type="project", aliases=[self.workspace_path.name, "project", "workspace", "codebase", "app"])
+
+        for lang in languages:
+            self.add_fact(project_name, "primary_language", lang, confidence=1.0, subject_type="project", object_type="language")
+            facts_added += 1
+
+        # 5. Readme Parsing
+        readme_file = None
+        for r_name in ("README.md", "README.txt", "readme.md", "README.rst"):
+            cand = self.workspace_path / r_name
+            if cand.is_file():
+                readme_file = cand
+                break
+
+        if readme_file:
+            try:
+                r_text = readme_file.read_text(encoding="utf-8", errors="ignore")
+                triples = self.extract_triples_rule_based(r_text)
+                for item in triples:
+                    self.add_fact(
+                        subject=item["subject"],
+                        relation=item["relation"],
+                        object_=item["object"],
+                        confidence=item.get("confidence", 0.9),
+                        subject_type=item.get("subject_type", "concept"),
+                        object_type=item.get("object_type", "concept"),
+                    )
+                    facts_added += 1
+            except Exception:
+                pass
+
+        # 6. File Structure & Key Entrypoint Discovery
+        try:
+            files = list(iter_workspace_files(self.workspace_path))
+            file_exts: dict[str, int] = {}
+            for f in files:
+                rel = str(f.relative_to(self.workspace_path)).replace("\\", "/")
+                ext = f.suffix.lower()
+                file_exts[ext] = file_exts.get(ext, 0) + 1
+
+                # Check for standard entrypoints
+                if rel.lower() in ("main.py", "app.py", "web_app.py", "server.py", "index.js", "index.ts", "server.ts", "main.go", "main.rs", "src/index.js", "src/main.py", "src/main.rs"):
+                    if rel not in entrypoints:
+                        entrypoints.append(rel)
+                        self.add_fact(project_name, "has_entrypoint", rel, confidence=1.0, subject_type="project", object_type="file")
+                        facts_added += 1
+
+                # Extract Python class/function definitions for top files
+                if ext == ".py" and len(files) <= 100:
+                    try:
+                        code = f.read_text(encoding="utf-8", errors="ignore")
+                        for match in re.finditer(r"^(?:class|def)\s+([A-Za-z0-9_]+)", code, re.M):
+                            sym = match.group(1)
+                            if not sym.startswith("_"):
+                                self.add_fact(rel, "defines", sym, confidence=0.85, subject_type="file", object_type="symbol")
+                                facts_added += 1
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        return {
+            "ok": True,
+            "project_name": project_name,
+            "languages": sorted(list(languages)),
+            "dependencies_count": len(dependencies),
+            "entrypoints": entrypoints,
+            "facts_added": facts_added,
+            "stats": self.backend.get_stats(),
+        }
+

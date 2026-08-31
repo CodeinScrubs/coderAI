@@ -1,3 +1,4 @@
+import json
 import time
 import pytest
 from pathlib import Path
@@ -88,3 +89,49 @@ def test_graph_memory_rule_based_extraction(tmp_path):
     assert len(triples) >= 2
     relations = [t["relation"] for t in triples]
     assert "uses" in relations or "works_on" in relations or "prefers_over" in relations
+
+
+def test_auto_project_indexing_and_conversion(tmp_path):
+    # Setup a mock project directory structure
+    proj_dir = tmp_path / "my_demo_app"
+    proj_dir.mkdir()
+    
+    # 1. package.json
+    (proj_dir / "package.json").write_text(json.dumps({
+        "name": "demo-ecommerce",
+        "main": "server.js",
+        "dependencies": {
+            "express": "^4.18.2",
+            "react": "^18.2.0",
+            "tailwindcss": "^3.0.0"
+        }
+    }), encoding="utf-8")
+
+    # 2. requirements.txt
+    (proj_dir / "requirements.txt").write_text("fastapi>=0.100.0\nuvicorn\npydantic==2.5.0\n", encoding="utf-8")
+
+    # 3. README.md
+    (proj_dir / "README.md").write_text("# Demo Ecommerce\nThis project uses Redis for caching.\nReza maintains Demo Ecommerce.\n", encoding="utf-8")
+
+    # 4. Source files
+    src_dir = proj_dir / "src"
+    src_dir.mkdir()
+    (src_dir / "app.py").write_text("class AuthService:\n    pass\n\ndef login_user():\n    pass\n", encoding="utf-8")
+
+    # Run auto-indexing on the project folder
+    store = GraphMemoryStore(proj_dir)
+    res = store.index_project_workspace()
+
+    assert res["ok"] is True
+    assert res["facts_added"] >= 5
+    assert "demo-ecommerce" in res["project_name"]
+
+    # Verify facts were created in the knowledge graph
+    stats = store.get_stats()
+    assert stats["entities"] >= 4
+    assert stats["active_facts"] >= 5
+
+    # Verify context retrieval finds the indexed dependencies
+    ctx = store.retrieve_context("What technologies and libraries does the project use?", token_budget=500)
+    assert "[Knowledge graph context]" in ctx
+    assert "express" in ctx or "fastapi" in ctx or "react" in ctx
