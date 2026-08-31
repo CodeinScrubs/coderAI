@@ -33,6 +33,11 @@ def test_fastapi_endpoints():
     assert resp.status_code == 200
     assert "projects" in resp.json()
 
+    resp = client.get("/api/index/graph")
+    assert resp.status_code == 200
+    assert "nodes" in resp.json()
+    assert "edges" in resp.json()
+
     resp = client.post("/api/settings", json={"temperature": 0.65})
     assert resp.status_code == 200
     data = resp.json()

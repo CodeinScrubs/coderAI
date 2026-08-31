@@ -2011,6 +2011,10 @@ class Handler(BaseHTTPRequestHandler):
             index = CodebaseIndex(get_workspace())
             _send_json(self, {"overview": index.get_project_overview(), "graph": index.dependency_tree()})
             return
+        if path in ("/api/index/graph", "/api/graph/structure"):
+            index = CodebaseIndex(get_workspace())
+            _send_json(self, index.get_schematic_graph())
+            return
         if path == "/api/projects":
             _send_json(self, {"projects": _project_cards()})
             return

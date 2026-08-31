@@ -145,3 +145,31 @@ def test_incremental_change_refreshes_graph_and_summary(tmp_path, monkeypatch):
     edges = index.get_graph().edges
     assert any(edge["from_file"] == "caller.py" and edge["to_file"] == "second.py" for edge in edges)
     assert not any(edge["from_file"] == "caller.py" and edge["to_file"] == "first.py" for edge in edges)
+
+
+def test_get_schematic_graph_nodes_and_edges(tmp_path, monkeypatch):
+    (tmp_path / "main.py").write_text(
+        "import helper\n\nclass App:\n    def start(self):\n        return helper.run()\n\ndef main():\n    app = App()\n    app.start()\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "helper.py").write_text("def run():\n    return 42\n", encoding="utf-8")
+
+    index = _offline_index(tmp_path, monkeypatch)
+    index.rebuild()
+
+    graph_payload = index.get_schematic_graph()
+    assert "nodes" in graph_payload
+    assert "edges" in graph_payload
+    assert graph_payload["file_count"] >= 2
+
+    node_ids = {n["id"] for n in graph_payload["nodes"]}
+    assert "main.py" in node_ids
+    assert "helper.py" in node_ids
+    assert "main.py::App" in node_ids or "main.py::main" in node_ids
+    assert "helper.py::run" in node_ids
+
+    # Verify edge types
+    edge_types = {e["type"] for e in graph_payload["edges"]}
+    assert "defines" in edge_types
+    assert "imports" in edge_types
+

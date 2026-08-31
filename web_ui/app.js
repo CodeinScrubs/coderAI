@@ -971,6 +971,7 @@ function renderFiles() {
   document.querySelectorAll(".file-item").forEach((btn) => {
     btn.addEventListener("click", () => loadFile(btn.dataset.path));
   });
+  refreshSchematicGraph();
 }
 
 function renderSkills() {
@@ -2142,8 +2143,478 @@ function setupSkillSlashAutocomplete() {
   });
 }
 
+// ── Interactive Schematic Architecture & Function Dependency Graph ──
+
+let schematicGraphState = {
+  nodes: [],
+  edges: [],
+  nodeMap: new Map(),
+  transform: { x: 0, y: 0, scale: 1 },
+  isDragging: false,
+  dragTarget: null,
+  dragStart: { x: 0, y: 0 },
+  hoveredNode: null,
+  isFullscreen: false,
+  lastWorkspace: null,
+};
+
+async function refreshSchematicGraph(force = false) {
+  const currentWs = state.data?.workspace?.path;
+  if (!currentWs) return;
+  if (!force && schematicGraphState.lastWorkspace === currentWs && schematicGraphState.nodes.length > 0) {
+    return;
+  }
+  schematicGraphState.lastWorkspace = currentWs;
+
+  try {
+    const data = await api("/api/index/graph");
+    renderSchematicGraphData(data);
+  } catch (err) {
+    const emptyEl = $("schematicGraphEmpty");
+    if (emptyEl) {
+      emptyEl.style.display = "flex";
+      emptyEl.textContent = "Could not load architecture graph";
+    }
+  }
+}
+
+function renderSchematicGraphData(data) {
+  const rawNodes = data?.nodes || [];
+  const rawEdges = data?.edges || [];
+  const emptyEl = $("schematicGraphEmpty");
+
+  if (!rawNodes.length) {
+    if (emptyEl) {
+      emptyEl.style.display = "flex";
+      emptyEl.textContent = "No graph relationships found";
+    }
+    schematicGraphState.nodes = [];
+    schematicGraphState.edges = [];
+    drawSchematicCanvas();
+    return;
+  }
+
+  if (emptyEl) emptyEl.style.display = "none";
+
+  const fileNodes = rawNodes.filter((n) => n.type === "file");
+  const symbolNodes = rawNodes.filter((n) => n.type !== "file");
+
+  const canvas = $("schematicCanvas");
+  const width = canvas ? (canvas.clientWidth || 300) : 300;
+  const height = canvas ? (canvas.clientHeight || 200) : 200;
+
+  const nodeMap = new Map();
+  const nodes = [];
+
+  const fileCount = Math.max(1, fileNodes.length);
+  const rx = Math.max(100, Math.min(width * 0.35, 240));
+  const ry = Math.max(60, Math.min(height * 0.3, 140));
+  const cx = width / 2;
+  const cy = height / 2;
+
+  fileNodes.forEach((fn, idx) => {
+    const angle = (idx / fileCount) * 2 * Math.PI - Math.PI / 2;
+    const fx = cx + rx * Math.cos(angle);
+    const fy = cy + ry * Math.sin(angle);
+
+    const nodeObj = {
+      id: fn.id,
+      label: fn.label || fn.id,
+      full_path: fn.full_path || fn.id,
+      type: "file",
+      is_entry: !!fn.is_entry,
+      symbols_count: fn.symbols_count || 0,
+      docstring: fn.docstring || "",
+      x: fx,
+      y: fy,
+      width: Math.max(70, Math.min(130, (fn.label || fn.id).length * 7 + 26)),
+      height: 26,
+    };
+    nodes.push(nodeObj);
+    nodeMap.set(fn.id, nodeObj);
+
+    const fileSymbols = symbolNodes.filter((s) => s.file_path === fn.id);
+    const symCount = fileSymbols.length;
+    fileSymbols.forEach((sn, sIdx) => {
+      const sAngle = angle + ((sIdx + 1) / (symCount + 1) - 0.5) * 1.5;
+      const sDist = 45 + (sIdx % 2) * 15;
+      const sx = fx + sDist * Math.cos(sAngle);
+      const sy = fy + sDist * Math.sin(sAngle);
+
+      const symObj = {
+        id: sn.id,
+        label: sn.label,
+        file_path: sn.file_path,
+        type: sn.type || "function",
+        x: sx,
+        y: sy,
+        width: Math.max(50, Math.min(100, (sn.label || "").length * 6 + 18)),
+        height: 18,
+      };
+      nodes.push(symObj);
+      nodeMap.set(sn.id, symObj);
+    });
+  });
+
+  const edges = [];
+  rawEdges.forEach((e) => {
+    const src = nodeMap.get(e.source);
+    const tgt = nodeMap.get(e.target);
+    if (src && tgt) {
+      edges.push({
+        source: src,
+        target: tgt,
+        type: e.type || "imports",
+        label: e.label || "",
+      });
+    }
+  });
+
+  schematicGraphState.nodes = nodes;
+  schematicGraphState.edges = edges;
+  schematicGraphState.nodeMap = nodeMap;
+
+  fitSchematicView();
+  drawSchematicCanvas();
+}
+
+function fitSchematicView() {
+  const canvas = $("schematicCanvas");
+  if (!canvas || !schematicGraphState.nodes.length) return;
+
+  const w = canvas.clientWidth || 300;
+  const h = canvas.clientHeight || 200;
+
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  schematicGraphState.nodes.forEach((n) => {
+    minX = Math.min(minX, n.x - (n.width || 20) / 2);
+    maxX = Math.max(maxX, n.x + (n.width || 20) / 2);
+    minY = Math.min(minY, n.y - (n.height || 20) / 2);
+    maxY = Math.max(maxY, n.y + (n.height || 20) / 2);
+  });
+
+  const graphW = Math.max(50, maxX - minX);
+  const graphH = Math.max(50, maxY - minY);
+  const padding = 40;
+
+  const scaleX = (w - padding * 2) / graphW;
+  const scaleY = (h - padding * 2) / graphH;
+  const scale = Math.max(0.4, Math.min(1.4, Math.min(scaleX, scaleY)));
+
+  const midX = (minX + maxX) / 2;
+  const midY = (minY + maxY) / 2;
+
+  schematicGraphState.transform = {
+    scale,
+    x: w / 2 - midX * scale,
+    y: h / 2 - midY * scale,
+  };
+}
+
+function drawSchematicCanvas() {
+  const canvas = $("schematicCanvas");
+  if (!canvas) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(10, rect.width);
+  const h = Math.max(10, rect.height);
+
+  if (canvas.width !== Math.floor(w * dpr) || canvas.height !== Math.floor(h * dpr)) {
+    canvas.width = Math.floor(w * dpr);
+    canvas.height = Math.floor(h * dpr);
+  }
+
+  const ctx = canvas.getContext("2d");
+  ctx.save();
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+
+  const bgGrad = ctx.createRadialGradient(w / 2, h / 2, 20, w / 2, h / 2, Math.max(w, h));
+  bgGrad.addColorStop(0, "#14171d");
+  bgGrad.addColorStop(1, "#0d0f12");
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, w, h);
+
+  const { x, y, scale } = schematicGraphState.transform;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(scale, scale);
+
+  const hovered = schematicGraphState.hoveredNode;
+
+  // 1. Draw Edges
+  schematicGraphState.edges.forEach((edge) => {
+    const src = edge.source;
+    const tgt = edge.target;
+    if (!src || !tgt) return;
+
+    const isConnectedToHover = hovered && (hovered === src || hovered === tgt);
+    ctx.beginPath();
+    ctx.moveTo(src.x, src.y);
+
+    if (edge.type === "defines") {
+      ctx.strokeStyle = isConnectedToHover ? "rgba(16, 185, 129, 0.85)" : "rgba(255, 255, 255, 0.12)";
+      ctx.lineWidth = isConnectedToHover ? 2 : 1;
+      ctx.setLineDash([2, 3]);
+      ctx.lineTo(tgt.x, tgt.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    } else {
+      const dx = tgt.x - src.x;
+      const dy = tgt.y - src.y;
+      const cx = (src.x + tgt.x) / 2 - dy * 0.15;
+      const cy = (src.y + tgt.y) / 2 + dx * 0.15;
+
+      ctx.strokeStyle = isConnectedToHover ? "rgba(59, 130, 246, 0.95)" : "rgba(59, 130, 246, 0.4)";
+      ctx.lineWidth = isConnectedToHover ? 2.5 : 1.4;
+      ctx.quadraticCurveTo(cx, cy, tgt.x, tgt.y);
+      ctx.stroke();
+
+      const angle = Math.atan2(tgt.y - cy, tgt.x - cx);
+      const arrowLen = 6;
+      ctx.beginPath();
+      ctx.moveTo(tgt.x, tgt.y);
+      ctx.lineTo(tgt.x - arrowLen * Math.cos(angle - Math.PI / 6), tgt.y - arrowLen * Math.sin(angle - Math.PI / 6));
+      ctx.lineTo(tgt.x - arrowLen * Math.cos(angle + Math.PI / 6), tgt.y - arrowLen * Math.sin(angle + Math.PI / 6));
+      ctx.closePath();
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.fill();
+    }
+  });
+
+  // 2. Draw Nodes
+  schematicGraphState.nodes.forEach((node) => {
+    const isHovered = hovered === node;
+    const isFile = node.type === "file";
+    const isFunc = node.type === "function";
+    const isClass = node.type === "class";
+
+    const nw = node.width || (isFile ? 80 : 60);
+    const nh = node.height || (isFile ? 26 : 18);
+    const nx = node.x - nw / 2;
+    const ny = node.y - nh / 2;
+    const r = isFile ? 6 : 9;
+
+    ctx.beginPath();
+    ctx.roundRect(nx, ny, nw, nh, r);
+
+    if (isFile) {
+      if (node.is_entry) {
+        ctx.fillStyle = isHovered ? "#3b1720" : "#241419";
+        ctx.strokeStyle = isHovered ? "#f43f5e" : "#e11d48";
+      } else {
+        ctx.fillStyle = isHovered ? "#172554" : "#0f172a";
+        ctx.strokeStyle = isHovered ? "#60a5fa" : "#3b82f6";
+      }
+      ctx.lineWidth = isHovered ? 2.2 : 1.2;
+    } else if (isFunc) {
+      ctx.fillStyle = isHovered ? "#064e3b" : "#022c22";
+      ctx.strokeStyle = isHovered ? "#34d399" : "#10b981";
+      ctx.lineWidth = isHovered ? 2 : 1;
+    } else if (isClass) {
+      ctx.fillStyle = isHovered ? "#78350f" : "#451a03";
+      ctx.strokeStyle = isHovered ? "#fbbf24" : "#f59e0b";
+      ctx.lineWidth = isHovered ? 2 : 1;
+    }
+
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = isHovered ? "#ffffff" : "#e2e8f0";
+    ctx.font = isFile ? "bold 10.5px Inter, sans-serif" : "9px JetBrains Mono, monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+
+    let label = node.label || node.id;
+    if (label.length > 14) label = label.slice(0, 12) + "…";
+    ctx.fillText(label, node.x, node.y + (isFile ? 0 : 0.5));
+  });
+
+  ctx.restore();
+  ctx.restore();
+}
+
+function initSchematicArchitectureGraph() {
+  const container = $("schematicCanvasContainer");
+  const box = $("schematicGraphBox");
+  const canvas = $("schematicCanvas");
+  const tooltip = $("schematicTooltip");
+  const toggleBtn = $("toggleSchematicFullscreen");
+  const refreshBtn = $("refreshSchematicGraph");
+
+  if (!container || !canvas || !box) return;
+
+  const ro = new ResizeObserver(() => {
+    drawSchematicCanvas();
+  });
+  ro.observe(container);
+
+  function toggleFullscreen() {
+    schematicGraphState.isFullscreen = !schematicGraphState.isFullscreen;
+    box.classList.toggle("fullscreen", schematicGraphState.isFullscreen);
+
+    let backdrop = document.querySelector(".schematic-backdrop");
+    if (schematicGraphState.isFullscreen) {
+      if (!backdrop) {
+        backdrop = document.createElement("div");
+        backdrop.className = "schematic-backdrop";
+        backdrop.addEventListener("click", toggleFullscreen);
+        document.body.appendChild(backdrop);
+      }
+      $("schematicExpandIcon").style.display = "none";
+      $("schematicCompressIcon").style.display = "block";
+    } else {
+      if (backdrop) backdrop.remove();
+      $("schematicExpandIcon").style.display = "block";
+      $("schematicCompressIcon").style.display = "none";
+    }
+
+    setTimeout(() => {
+      fitSchematicView();
+      drawSchematicCanvas();
+    }, 50);
+  }
+
+  // Double click anywhere on the graph box toggles fullscreen
+  box.addEventListener("dblclick", (e) => {
+    if (e.target.closest("button")) return;
+    toggleFullscreen();
+  });
+
+  if (toggleBtn) {
+    toggleBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleFullscreen();
+    });
+  }
+
+  if (refreshBtn) {
+    refreshBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      refreshSchematicGraph(true);
+    });
+  }
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && schematicGraphState.isFullscreen) {
+      toggleFullscreen();
+    }
+  });
+
+  function getGraphCoords(e) {
+    const rect = canvas.getBoundingClientRect();
+    const clientX = e.clientX - rect.left;
+    const clientY = e.clientY - rect.top;
+    const { x, y, scale } = schematicGraphState.transform;
+    return {
+      gx: (clientX - x) / scale,
+      gy: (clientY - y) / scale,
+      screenX: e.clientX,
+      screenY: e.clientY,
+      localX: clientX,
+      localY: clientY,
+    };
+  }
+
+  function findNodeAt(gx, gy) {
+    for (let i = schematicGraphState.nodes.length - 1; i >= 0; i--) {
+      const n = schematicGraphState.nodes[i];
+      const nw = (n.width || 60) / 2;
+      const nh = (n.height || 20) / 2;
+      if (gx >= n.x - nw && gx <= n.x + nw && gy >= n.y - nh && gy <= n.y + nh) {
+        return n;
+      }
+    }
+    return null;
+  }
+
+  container.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    const { gx, gy, localX, localY } = getGraphCoords(e);
+    const hitNode = findNodeAt(gx, gy);
+
+    if (hitNode) {
+      schematicGraphState.dragTarget = hitNode;
+      schematicGraphState.dragStart = { x: gx - hitNode.x, y: gy - hitNode.y };
+    } else {
+      schematicGraphState.isDragging = true;
+      schematicGraphState.dragStart = { x: localX - schematicGraphState.transform.x, y: localY - schematicGraphState.transform.y };
+    }
+  });
+
+  window.addEventListener("mousemove", (e) => {
+    const { gx, gy, localX, localY } = getGraphCoords(e);
+
+    if (schematicGraphState.dragTarget) {
+      schematicGraphState.dragTarget.x = gx - schematicGraphState.dragStart.x;
+      schematicGraphState.dragTarget.y = gy - schematicGraphState.dragStart.y;
+      drawSchematicCanvas();
+      return;
+    }
+
+    if (schematicGraphState.isDragging) {
+      schematicGraphState.transform.x = localX - schematicGraphState.dragStart.x;
+      schematicGraphState.transform.y = localY - schematicGraphState.dragStart.y;
+      drawSchematicCanvas();
+      return;
+    }
+
+    const hitNode = findNodeAt(gx, gy);
+    if (hitNode !== schematicGraphState.hoveredNode) {
+      schematicGraphState.hoveredNode = hitNode;
+      drawSchematicCanvas();
+
+      if (hitNode && tooltip) {
+        let text = `<strong>${escapeHtml(hitNode.label)}</strong> (${hitNode.type})`;
+        if (hitNode.type === "file") {
+          text += `<br><span style="color:var(--muted)">Symbols: ${hitNode.symbols_count}</span>`;
+          if (hitNode.is_entry) text += `<br><span style="color:var(--danger)">★ Entry Point</span>`;
+          if (hitNode.docstring) text += `<br><span style="font-size:9.5px;color:var(--text-dim)">${escapeHtml(hitNode.docstring.slice(0, 100))}</span>`;
+        } else {
+          text += `<br><span style="color:var(--muted)">In: ${escapeHtml(hitNode.file_path || "")}</span>`;
+        }
+        tooltip.innerHTML = text;
+        tooltip.style.left = `${Math.min(localX + 12, container.clientWidth - 180)}px`;
+        tooltip.style.top = `${Math.min(localY + 12, container.clientHeight - 80)}px`;
+        tooltip.style.display = "block";
+      } else if (tooltip) {
+        tooltip.style.display = "none";
+      }
+    }
+  });
+
+  window.addEventListener("mouseup", () => {
+    schematicGraphState.isDragging = false;
+    schematicGraphState.dragTarget = null;
+  });
+
+  container.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const { localX, localY } = getGraphCoords(e);
+    const zoomFactor = e.deltaY < 0 ? 1.15 : 0.87;
+    const newScale = Math.max(0.2, Math.min(3.5, schematicGraphState.transform.scale * zoomFactor));
+
+    schematicGraphState.transform.x = localX - (localX - schematicGraphState.transform.x) * (newScale / schematicGraphState.transform.scale);
+    schematicGraphState.transform.y = localY - (localY - schematicGraphState.transform.y) * (newScale / schematicGraphState.transform.scale);
+    schematicGraphState.transform.scale = newScale;
+
+    drawSchematicCanvas();
+  }, { passive: false });
+
+  container.addEventListener("click", (e) => {
+    const { gx, gy } = getGraphCoords(e);
+    const hitNode = findNodeAt(gx, gy);
+    if (hitNode && (hitNode.type === "file" || hitNode.file_path)) {
+      const targetPath = hitNode.type === "file" ? hitNode.full_path : hitNode.file_path;
+      if (targetPath) loadFile(targetPath);
+    }
+  });
+}
+
 initPanelResizersAndToggles();
 setupSkillSlashAutocomplete();
+initSchematicArchitectureGraph();
 installEditorMetricStyles();
 updateGitAuthPanel();
 refresh().catch((err) => {

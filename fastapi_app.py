@@ -107,6 +107,12 @@ def create_app() -> FastAPI:
     async def get_skills_usage():
         return web_app._skill_usage_payload()
 
+    @app.get("/api/index/graph")
+    @app.get("/api/graph/structure")
+    async def get_schematic_graph():
+        index = CodebaseIndex(web_app.get_workspace())
+        return index.get_schematic_graph()
+
     @app.get("/api/memory/graph/stats")
     async def get_graph_stats():
         return web_app._graph_memory_store().get_stats()

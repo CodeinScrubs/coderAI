@@ -367,6 +367,81 @@ class CodebaseIndex:
             for path in paths[:limit] if any(edge["from_file"] == path for edge in graph.edges)
         ]
 
+    def get_schematic_graph(self) -> dict:
+        """
+        Returns an interactive nodes & edges schematic graph of files, functions,
+        classes, imports, and calls across the project.
+        """
+        graph = self.get_graph()
+        nodes_map = dict(graph.nodes)
+        edges_list = list(graph.edges)
+
+        if not nodes_map:
+            builder = DependencyGraphBuilder()
+            on_the_fly_nodes = {}
+            for file_path in self.discover_files()[:60]:
+                try:
+                    rel = file_path.relative_to(self.workspace_path).as_posix()
+                    content = file_path.read_text(encoding="utf-8", errors="ignore")
+                    on_the_fly_nodes[rel] = builder.extract(rel, content)
+                except Exception:
+                    pass
+            if on_the_fly_nodes:
+                nodes_map = on_the_fly_nodes
+                edges_list = self._resolve_dependency_edges(on_the_fly_nodes)
+
+        nodes = []
+        edges = []
+        entry_points = set(graph.get_entry_points()) if graph else set()
+
+        for file_path, fnode in nodes_map.items():
+            is_entry = (
+                file_path in entry_points
+                or fnode.has_main_guard
+                or Path(file_path).name.lower() in ("main.py", "app.py", "index.js", "server.js", "index.ts", "server.ts", "main.go", "main.rs")
+            )
+            nodes.append({
+                "id": file_path,
+                "label": Path(file_path).name,
+                "full_path": file_path,
+                "type": "file",
+                "is_entry": is_entry,
+                "symbols_count": len(fnode.exported_symbols),
+                "docstring": fnode.module_docstring,
+            })
+
+            for sym in fnode.exported_symbols[:15]:
+                sym_id = f"{file_path}::{sym}"
+                sym_type = "class" if sym and sym[0].isupper() else "function"
+                nodes.append({
+                    "id": sym_id,
+                    "label": sym,
+                    "file_path": file_path,
+                    "type": sym_type,
+                })
+                edges.append({
+                    "source": file_path,
+                    "target": sym_id,
+                    "type": "defines",
+                    "label": "defines",
+                })
+
+        for edge in edges_list:
+            edges.append({
+                "source": edge["from_file"],
+                "target": edge["to_file"],
+                "type": edge.get("relation", "imports"),
+                "label": edge.get("relation", "imports"),
+                "symbol": edge.get("symbol"),
+            })
+
+        return {
+            "nodes": nodes,
+            "edges": edges,
+            "file_count": len(nodes_map),
+            "symbol_count": sum(len(n.exported_symbols) for n in nodes_map.values()),
+        }
+
     def retrieve_context(self, query: str, top_k: int = 5) -> dict:
         query_type = self.query_router.classify(query)
         if query_type == QueryType.PROJECT_LEVEL:
