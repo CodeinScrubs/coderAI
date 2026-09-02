@@ -247,6 +247,14 @@ Please retain the attribution in the `NOTICE` file when redistributing this proj
 
 ## Development Notes
 
+The web UI direction regression tests run with Node.js 22+ using only its built-in test runner:
+
+```powershell
+node --test tests/web_ui_direction.test.cjs
+```
+
+Node.js is only needed for these development tests, not to run the application. The tests evaluate the production direction and message-rendering helpers without starting the Python backend or contacting a model provider.
+
 - `launcher.py` finds a free local port starting at `7864` and opens the browser automatically.
 - LangChain is used as the preferred model runtime for Local Ollama and OpenAI-compatible Custom API mode.
 - If LangChain provider packages are unavailable, the app falls back to the built-in HTTP runtime.

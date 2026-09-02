@@ -1024,7 +1024,8 @@ function renderPrompts() {
 function isRTL(text) {
   const trimmed = String(text || "").trim();
   if (!trimmed) return false;
-  const clean = trimmed.replace(/[\d\s.,!?:;"'()\[\]{}<>\/\\@#$%^&*_+=~`|-]/g, "");
+  // Decimal digits are not direction votes, regardless of their script.
+  const clean = trimmed.replace(/[\p{Decimal_Number}\s.,!?:;"'()\[\]{}<>\/\\@#$%^&*_+=~`|-]/gu, "");
   if (!clean) return false;
   const rtlChars = clean.match(/[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/g) || [];
   return (rtlChars.length / clean.length) > 0.2;
