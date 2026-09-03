@@ -25,6 +25,7 @@ Output/
 *.msi
 *.iss
 *.spec
+!coder_ai.spec
 *.spec.bak
 
 # Logs & temp files

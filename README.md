@@ -1,8 +1,10 @@
 # Ollama Agentic Workspace
 
-Ollama Agentic Workspace is a local-first agentic coding environment for working with multiple projects on your machine. It provides a dedicated Projects dashboard, project and session archives, a three-pane coding workspace, Git-aware editing, and an agent that can inspect and modify the selected project through tool calls.
+Ollama Agentic Workspace is a local-first agentic coding environment for working with multiple projects on your machine. It provides a dedicated Projects dashboard, project and session archives, a three-pane coding workspace, Git-aware editing, interactive architecture & function visualization, an integrated VS Code-style terminal, and an agent that can inspect and modify the selected project through tool calls.
 
 The app is built as a small Python HTTP server with a custom HTML/CSS/JavaScript frontend.
+
+![Ollama Agentic Workspace Overview](assets/workspace_overview.png)
 
 ## Download The App
 
@@ -14,10 +16,22 @@ Use the portable executable if you want the simplest option. The portable versio
 
 The folder-based package may start faster and is usually better for future installer-style distribution, but it must be kept together with its included support files. For most users, the portable version is easier.
 
-## Features
+### Key Features
 
+- **Interactive Schematic Architecture Graph & Code Navigation**:
+  - Visual dependency graph displayed directly below the file list, linking folders, files, functions, and classes.
+  - Folder-to-file (`contains`), cross-file (`imports`), and function execution (`calls`) relationships.
+  - **Direct Jump to Code**: Click or double-click any module, function, or class node to open its parent file in the code editor, automatically scrolling to and highlighting that function or class definition.
+  - Double-click empty canvas space to toggle fullscreen graph view.
+- **`embeddinggemma` RAG Integration**:
+  - Automatic detection of the `embeddinggemma` model in Ollama upon startup.
+  - Interactive modal dialog offering one-click background download (`ollama pull embeddinggemma`) with a live progress bar.
+  - Generates 768-dimensional dense vector embeddings stored locally in SQLite and Chroma for pinpoint semantic codebase retrieval.
+  - Seamless fallback to simple BM25 / keyword indexing if user opts out.
+- **Integrated Terminal & Command Prompt (VS Code Style with xterm.js)**:
+  - Real-time interactive terminal panel below the code editor powered by `xterm.js` and Windows PTY (`winpty`).
+  - Switch dynamically between PowerShell and Command Prompt (`cmd.exe`), stream subprocess output in real-time, execute build/test commands, review history with Up/Down arrow keys, clear with `Ctrl+L`, cancel with `Ctrl+C` or the Kill button, resize vertically with smooth drag handle, and toggle open/closed with `Ctrl+\`` or topbar button.
 - **Local Ollama & Custom API Support**: Seamless integration with local Ollama models (with automatic model detection) and OpenAI-compatible endpoints.
-- **Interactive Schematic Architecture Graph**: Visual dependency and function call graph displayed directly below the file list. Double-click to expand to full-screen; click any node to jump directly to the file in the code editor.
 - **Bi-directional RTL / LTR Chat Support**: Automatic real-time language detection. Persian/Arabic text automatically aligns Right-to-Left (RTL) with proper Persian typography, while English and code snippets stay cleanly Left-to-Right (LTR).
 - **Interactive Slash Commands (`/`) for Skills**: Type `/` in the chat input to invoke a rich autocomplete popover listing all available engineering and productivity skills with keyboard (Up/Down/Enter) and mouse selection.
 - **Embedded Knowledge Graph Memory (KG-RAG)**: Local SQLite-based Knowledge Graph (`memory_graph.py`) with entity resolution, bi-temporal fact tracking, multi-hop relationship expansion, and automatic background workspace scanning/indexing.
@@ -34,6 +48,8 @@ The folder-based package may start faster and is usually better for future insta
 ```text
 .
 ├── web_app.py                  # Local HTTP server and agent loop
+├── fastapi_app.py              # Optional FastAPI / ASGI WebSocket wrapper
+├── terminal_manager.py         # Subprocess manager for interactive PowerShell & CMD terminal sessions
 ├── agent_runtime.py            # LangChain model runtime adapter
 ├── launcher.py                 # EXE-friendly launcher that opens the browser
 ├── tools.py                    # Tool schemas and tool execution handlers
@@ -49,7 +65,6 @@ The folder-based package may start faster and is usually better for future insta
 ├── skills_manager.py           # Skill discovery, selection, and usage parsing
 ├── skill_router.py             # Fast, semantic, and optional LLM skill-selection funnel
 ├── skill_tracker.py            # Persistent selected/loaded/applied/failed skill events and analytics
-├── fastapi_app.py              # Optional FastAPI / ASGI WebSocket wrapper
 ├── web_ui/                     # Frontend HTML, CSS, and JavaScript
 ├── system_prompts/             # Markdown system prompts
 ├── skills/                     # Skill definitions

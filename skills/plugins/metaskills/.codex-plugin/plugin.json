@@ -1,0 +1,31 @@
+{
+  "name": "metaskills",
+  "version": "1.8.0",
+  "description": "Fourteen guided journeys that orchestrate the whole skill library step by step — create, improve, and grow a business, website, or app, plus improve code quality, remove technical debt, design code architecture, optimize a conversion flow, and optimize an existing codebase for speed and structure. Each metaskill invokes the right skills phase by phase, asks the user questions at every decision point, and records results as living documents in the project docs/ folder",
+  "license": "MIT",
+  "keywords": [
+    "metaskills",
+    "guided-journey",
+    "orchestrator",
+    "workflow",
+    "create-business",
+    "create-website",
+    "create-app",
+    "improve-business",
+    "improve-website",
+    "improve-app",
+    "grow-business",
+    "grow-website",
+    "grow-app",
+    "code-quality",
+    "technical-debt",
+    "architecture",
+    "conversion-optimization",
+    "architecture-optimization",
+    "funnel",
+    "performance"
+  ],
+  "repository": "https://github.com/wondelai/skills",
+  "homepage": "https://github.com/wondelai/skills",
+  "skills": "./skills/"
+}

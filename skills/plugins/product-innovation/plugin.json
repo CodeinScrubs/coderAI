@@ -1,0 +1,25 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "product-innovation",
+  "version": "1.8.0",
+  "description": "Product innovation and validation frameworks including Lean Startup methodology, Google Ventures Design Sprint, and Don Norman's design principles",
+  "author": {
+    "name": "Wondel.ai",
+    "url": "https://wondel.ai"
+  },
+  "homepage": "https://github.com/wondelai/skills",
+  "repository": "https://github.com/wondelai/skills",
+  "license": "MIT",
+  "keywords": [
+    "lean-startup",
+    "mvp",
+    "design-sprint",
+    "validation",
+    "innovation",
+    "prototyping",
+    "pivot-or-persevere",
+    "validate-an-idea",
+    "product-discovery",
+    "empowered-teams"
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "sales-influence",
+  "version": "1.8.0",
+  "description": "Sales, persuasion, and messaging skills including Cialdini's influence psychology, Aaron Ross's outbound sales methodology, Heath Brothers' sticky messaging, and Alex Hormozi's offer creation",
+  "author": {
+    "name": "Wondel.ai",
+    "url": "https://wondel.ai"
+  },
+  "homepage": "https://github.com/wondelai/skills",
+  "repository": "https://github.com/wondelai/skills",
+  "license": "MIT",
+  "keywords": [
+    "sales",
+    "influence",
+    "persuasion",
+    "outbound",
+    "messaging",
+    "offers",
+    "copywriting",
+    "social-proof",
+    "cold-email",
+    "irresistible-offer",
+    "objection-handling",
+    "pricing"
+  ]
+}

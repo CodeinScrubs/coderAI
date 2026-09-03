@@ -57,3 +57,22 @@ def test_fastapi_websocket_ping_and_cancel():
         websocket.send_text(json.dumps({"type": "cancel"}))
         data = json.loads(websocket.receive_text())
         assert data.get("type") == "cancelled"
+
+
+def test_fastapi_embedding_status_and_dismiss():
+    app = create_app()
+    client = TestClient(app)
+
+    resp = client.get("/api/ollama/embedding-status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "installed" in data
+    assert data.get("target_model") == "embeddinggemma"
+
+    resp = client.post("/api/ollama/dismiss-embedding")
+    assert resp.status_code == 200
+    assert resp.json().get("ok") is True
+
+    resp = client.get("/api/ollama/embedding-status")
+    assert resp.json().get("dismissed") is True
+

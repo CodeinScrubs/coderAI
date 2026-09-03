@@ -115,6 +115,11 @@ class CodebaseIndex:
         self._embedding_disabled = False
         self._init_schema()
 
+    def refresh_embedding_provider(self, model: str | None = None) -> None:
+        self.embedding_provider = LocalEmbeddingProvider(model=model)
+        self.embedding_error = ""
+        self._embedding_disabled = False
+
     def _connect(self):
         db = sqlite3.connect(self.db_path, timeout=30.0)
         db.row_factory = sqlite3.Row
@@ -381,7 +386,7 @@ class CodebaseIndex:
             on_the_fly_nodes = {}
             for file_path in self.discover_files()[:60]:
                 try:
-                    rel = file_path.relative_to(self.workspace_path).as_posix()
+                    rel = file_path.relative_to(self.workspace).as_posix()
                     content = file_path.read_text(encoding="utf-8", errors="ignore")
                     on_the_fly_nodes[rel] = builder.extract(rel, content)
                 except Exception:
@@ -408,16 +413,50 @@ class CodebaseIndex:
                 "is_entry": is_entry,
                 "symbols_count": len(fnode.exported_symbols),
                 "docstring": fnode.module_docstring,
+                "start_line": 1,
+                "end_line": 1,
             })
+
+            sym_line_map = {}
+            try:
+                with self._connect() as db:
+                    rows = db.execute(
+                        "SELECT symbol_name, symbol_type, start_line, end_line FROM code_chunks WHERE file_path=?",
+                        (file_path,)
+                    ).fetchall()
+                    for r in rows:
+                        if r["symbol_name"]:
+                            sym_line_map[r["symbol_name"]] = (r["start_line"], r["end_line"], r["symbol_type"])
+            except Exception:
+                pass
+
+            if any(sym not in sym_line_map for sym in fnode.exported_symbols):
+                try:
+                    abs_p = (self.workspace / file_path).resolve()
+                    if abs_p.is_file():
+                        lines = abs_p.read_text(encoding="utf-8", errors="ignore").splitlines()
+                        for line_no, l in enumerate(lines, 1):
+                            l_strip = l.strip()
+                            for sym in fnode.exported_symbols:
+                                if sym not in sym_line_map:
+                                    if l_strip.startswith(f"def {sym}") or l_strip.startswith(f"async def {sym}") or l_strip.startswith(f"class {sym}") or f"function {sym}" in l_strip or f"const {sym}" in l_strip:
+                                        sym_line_map[sym] = (line_no, line_no, "class" if l_strip.startswith("class ") else "function")
+                except Exception:
+                    pass
 
             for sym in fnode.exported_symbols[:15]:
                 sym_id = f"{file_path}::{sym}"
-                sym_type = "class" if sym and sym[0].isupper() else "function"
+                line_info = sym_line_map.get(sym)
+                start_line = line_info[0] if line_info else 1
+                end_line = line_info[1] if line_info else 1
+                sym_type = line_info[2] if line_info else ("class" if sym and sym[0].isupper() else "function")
                 nodes.append({
                     "id": sym_id,
                     "label": sym,
                     "file_path": file_path,
                     "type": sym_type,
+                    "start_line": start_line,
+                    "end_line": end_line,
                 })
                 edges.append({
                     "source": file_path,
@@ -426,14 +465,47 @@ class CodebaseIndex:
                     "label": "defines",
                 })
 
+        folder_nodes = {}
+        for file_path in nodes_map.keys():
+            parent_dir = Path(file_path).parent.as_posix()
+            if parent_dir and parent_dir != ".":
+                curr = Path(file_path).parent
+                while curr and curr.as_posix() != ".":
+                    c_posix = curr.as_posix()
+                    if c_posix not in folder_nodes:
+                        folder_nodes[c_posix] = {
+                            "id": f"folder::{c_posix}",
+                            "label": curr.name,
+                            "full_path": c_posix,
+                            "type": "folder",
+                            "start_line": 1,
+                            "end_line": 1,
+                        }
+                    curr = curr.parent if curr.parent != curr and curr.parent.as_posix() != "." else None
+
+                edges.append({
+                    "source": f"folder::{parent_dir}",
+                    "target": file_path,
+                    "type": "contains",
+                    "label": "contains",
+                })
+
+        for fnode_dict in folder_nodes.values():
+            nodes.append(fnode_dict)
+
         for edge in edges_list:
-            edges.append({
-                "source": edge["from_file"],
-                "target": edge["to_file"],
-                "type": edge.get("relation", "imports"),
-                "label": edge.get("relation", "imports"),
-                "symbol": edge.get("symbol"),
-            })
+            src = edge.get("from_file") or edge.get("source")
+            tgt = edge.get("to_file") or edge.get("target")
+            rel = edge.get("relation_type") or edge.get("relation") or "imports"
+            sym = edge.get("detail") or edge.get("symbol")
+            if src and tgt:
+                edges.append({
+                    "source": src,
+                    "target": tgt,
+                    "type": rel,
+                    "label": rel,
+                    "symbol": sym,
+                })
 
         return {
             "nodes": nodes,
@@ -539,7 +611,13 @@ class CodebaseIndex:
                     imported_targets.setdefault(source, set()).add(target)
         for source, node in nodes.items():
             for call in node.internal_calls:
-                owners = (symbol_owners.get(call, set()) - {source}) & imported_targets.get(source, set())
+                call_name = call.split(".")[-1]
+                candidates = (symbol_owners.get(call_name, set()) | symbol_owners.get(call, set())) - {source}
+                if not candidates:
+                    continue
+                owners = candidates & imported_targets.get(source, set())
+                if not owners and len(candidates) == 1:
+                    owners = candidates
                 if len(owners) == 1:
                     edges.append({"from_file": source, "to_file": next(iter(owners)), "relation_type": "calls", "detail": call})
         unique = {(edge["from_file"], edge["to_file"], edge["relation_type"], edge["detail"]): edge for edge in edges}
@@ -556,12 +634,22 @@ class CodebaseIndex:
             base = source_parent
             for _ in range(max(0, level - 1)):
                 base = base.parent
-        module_path = Path(*[part for part in module.split(".") if part]) if module else Path()
-        candidates = [base / module_path]
-        if not imported.startswith("."):
-            candidates.append(source_parent / module_path)
+
+        parts = [part for part in module.split(".") if part] if module else []
+        candidates = []
+        for i in range(len(parts), 0, -1):
+            sub_path = Path(*parts[:i])
+            candidates.append(base / sub_path)
+            if not imported.startswith("."):
+                candidates.append(source_parent / sub_path)
+                stem = parts[i - 1]
+                for p in paths:
+                    p_path = Path(p)
+                    if p_path.stem == stem or p_path.name == stem:
+                        candidates.append(p_path)
+
         for candidate in candidates:
-            for suffix in (".py", ".js", ".ts", ".tsx", ".jsx"):
+            for suffix in (".py", ".js", ".ts", ".tsx", ".jsx", ".mjs"):
                 value = candidate.as_posix() + suffix
                 if value in paths:
                     return value

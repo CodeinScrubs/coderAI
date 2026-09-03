@@ -49,7 +49,14 @@ class DependencyGraphBuilder:
             elif isinstance(node, ast.ImportFrom):
                 prefix = "." * int(node.level or 0)
                 module = node.module or ""
-                imports.append(prefix + module)
+                if module:
+                    imports.append(prefix + module)
+                for alias in node.names:
+                    if alias.name != "*":
+                        if module:
+                            imports.append(prefix + f"{module}.{alias.name}")
+                        else:
+                            imports.append(prefix + alias.name)
             elif isinstance(node, ast.Call):
                 name = self._call_name(node.func)
                 if name:

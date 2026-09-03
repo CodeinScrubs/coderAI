@@ -7,7 +7,9 @@ def test_dependency_builder_extracts_python_structure():
         "import os\nfrom .helpers import execute\n\nclass Worker: pass\n\ndef run():\n    return execute()\n",
     )
 
-    assert node.imports == ["os", ".helpers"]
+    assert "os" in node.imports
+    assert ".helpers" in node.imports
+    assert ".helpers.execute" in node.imports
     assert node.exported_symbols == ["Worker", "run"]
     assert "execute" in node.internal_calls
 

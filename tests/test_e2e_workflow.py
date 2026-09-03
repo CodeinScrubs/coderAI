@@ -15,6 +15,7 @@ from tools import (
     set_workspace,
     get_workspace,
     approve_pending,
+    reset_cancel_flag,
 )
 from memory_manager import MemoryManager
 from skill_tracker import SkillTracker
@@ -25,6 +26,7 @@ def test_full_workspace_lifecycle_e2e(tmp_path):
     ws.mkdir(parents=True, exist_ok=True)
     set_workspace(ws)
     approve_pending(always_allow_for_session=True)
+    reset_cancel_flag()
 
     # 1. Tool write and read file
     write_res = tool_write_file("main.py", "def add(a, b):\n    return a + b\n\nprint(add(2, 3))\n")

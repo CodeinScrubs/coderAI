@@ -9,6 +9,7 @@ import json
 import os
 import queue
 import threading
+import uuid
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
@@ -20,7 +21,9 @@ from fastapi.staticfiles import StaticFiles
 
 import web_app
 from codebase_index import CodebaseIndex
+from terminal_manager import terminal_manager
 from tools import cancel_current_execution, get_workspace, set_workspace
+from vector_store import EmbeddingModelManager
 
 
 def create_app() -> FastAPI:
@@ -34,6 +37,14 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    @app.middleware("http")
+    async def add_no_cache_header(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
+
     static_dir = Path(web_app.STATIC_DIR).resolve()
     static_dir.mkdir(exist_ok=True)
 
@@ -41,7 +52,7 @@ def create_app() -> FastAPI:
     async def index():
         index_file = static_dir / "index.html"
         if index_file.exists():
-            return FileResponse(str(index_file), media_type="text/html")
+            return FileResponse(str(index_file), media_type="text/html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
         return HTMLResponse("<h1>CoderAI Web UI is ready</h1>")
 
     @app.get("/api/state")
@@ -53,10 +64,9 @@ def create_app() -> FastAPI:
     @app.post("/api/settings")
     async def save_settings(request: Request):
         data = await request.json()
-        requested_mode = data.get("conn_mode", web_app.STATE["conn_mode"])
         for key in (
             "conn_mode", "temperature", "enable_thinking",
-            "custom_api_url", "custom_api_key", "custom_api_model", "memory_enabled",
+            "custom_api_url", "memory_enabled",
             "context_token_budget", "response_token_budget", "auto_continue",
             "tavily_enabled", "tavily_api_key",
             "git_approval_mode",
@@ -65,10 +75,22 @@ def create_app() -> FastAPI:
         ):
             if key in data:
                 web_app.STATE[key] = data[key]
-        if requested_mode == web_app.MODE_LOCAL and "model" in data:
-            web_app.STATE["model"] = str(data.get("model") or web_app.STATE["model"]).strip()
-        elif requested_mode == web_app.MODE_CUSTOM and not str(web_app.STATE.get("custom_api_model") or "").strip():
-            web_app.STATE["custom_api_model"] = str(data.get("model") or "gpt-4o-mini").strip()
+        if "custom_api_key" in data and str(data["custom_api_key"] or "").strip():
+            web_app.STATE["custom_api_key"] = str(data["custom_api_key"]).strip()
+        if "custom_api_model" in data and str(data["custom_api_model"] or "").strip():
+            web_app.STATE["custom_api_model"] = str(data["custom_api_model"]).strip()
+
+        is_custom = "custom" in str(web_app.STATE.get("conn_mode") or "").lower()
+        if is_custom:
+            if "model" in data and str(data["model"] or "").strip() and data["model"] != "gemma4:12b":
+                web_app.STATE["custom_api_model"] = str(data["model"]).strip()
+            if str(web_app.STATE.get("custom_api_model") or "").strip():
+                web_app.STATE["model"] = web_app.STATE["custom_api_model"]
+        else:
+            if "model" in data and str(data["model"] or "").strip():
+                web_app.STATE["model"] = str(data["model"]).strip()
+                web_app.STATE["model_user_selected"] = True
+
         web_app.STATE["custom_api_model"] = str(web_app.STATE.get("custom_api_model") or "gpt-4o-mini").strip()
         if "tavily_api_key" in data:
             web_app.STATE["tavily_api_key"] = str(data.get("tavily_api_key") or "").strip()
@@ -78,8 +100,6 @@ def create_app() -> FastAPI:
         for key in ("context_token_budget", "response_token_budget"):
             if key in web_app.STATE:
                 web_app.STATE[key] = max(512, int(web_app.STATE[key]))
-        if requested_mode == web_app.MODE_LOCAL and "model" in data:
-            web_app.STATE["model_user_selected"] = True
         web_app._save_persisted_settings()
         return web_app._client_state()
 
@@ -185,6 +205,293 @@ def create_app() -> FastAPI:
             "deleted": deleted,
             "projects": web_app._project_cards(manager),
         }
+
+    @app.get("/api/memory")
+    async def get_memory():
+        return web_app._memory_payload()
+
+    @app.post("/api/memory/archive")
+    async def memory_archive(request: Request):
+        data = await request.json()
+        manager = web_app._memory_manager()
+        project_id = data.get("project_id")
+        session_id = str(data.get("session_id") or "")
+        project = manager.get_project(int(project_id)) if project_id else None
+        return {
+            "projects": web_app._project_cards(manager),
+            "sessions": manager.list_sessions(int(project_id)) if project_id else [],
+            "session": manager.load_session(session_id) if session_id else None,
+            "project": project,
+            "files": web_app._workspace_snapshot_for(project["workspace_path"])["files"] if project and Path(project["workspace_path"]).is_dir() else [],
+            "facts": manager.list_facts(project_id=int(project_id)) if project_id else [],
+            "preferences": manager.get_user_preferences(int(project_id)) if project_id else {},
+            "skill_usage": web_app._skill_usage_payload(project["workspace_path"]) if project else {"skills": [], "recent": []},
+        }
+
+    @app.post("/api/memory/archive/file")
+    async def memory_archive_file(request: Request):
+        data = await request.json()
+        manager = web_app._memory_manager()
+        project = manager.get_project(int(data.get("project_id")))
+        if not project:
+            raise HTTPException(status_code=404, detail="Archived project not found")
+        return web_app._read_workspace_file(project["workspace_path"], str(data.get("path") or ""))
+
+    @app.post("/api/memory/session/resume")
+    async def memory_session_resume(request: Request):
+        data = await request.json()
+        session_id = str(data.get("session_id") or "").strip()
+        session = web_app._memory_manager().load_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        ok, message = set_workspace(session["workspace_path"])
+        if not ok:
+            raise HTTPException(status_code=400, detail=message)
+        web_app.STATE["memory_session_id"] = session_id
+        web_app.STATE["messages"] = [
+            {"role": turn["role"], "content": turn["content"]}
+            for turn in session["turns"]
+        ]
+        web_app.STATE["tools_log"] = []
+        web_app.STATE["used_skills_log"] = []
+        web_app.STATE["memory_summary"] = session.get("summary", "")
+        web_app.STATE["memory_summarized_count"] = 0
+        web_app.STATE["memory_retrieval_count"] = 0
+        web_app.STATE["memory_retrieved_facts"] = []
+        web_app.STATE["memory_context"] = ""
+        sid = request.headers.get("x-session-id")
+        return web_app._client_state(sid)
+
+    @app.post("/api/memory/fact")
+    async def memory_fact(request: Request):
+        data = await request.json()
+        manager = web_app._memory_manager()
+        fact_id = data.get("id")
+        if fact_id:
+            manager.update_fact(int(fact_id), data.get("fact", ""), data.get("source", "manual"))
+        else:
+            manager.index_fact(data.get("fact", ""), data.get("source", "manual"))
+        return web_app._memory_payload()
+
+    @app.post("/api/memory/fact/delete")
+    async def memory_fact_delete(request: Request):
+        data = await request.json()
+        web_app._memory_manager().delete_fact(int(data.get("id")))
+        return web_app._memory_payload()
+
+    @app.post("/api/memory/preference")
+    async def memory_preference(request: Request):
+        data = await request.json()
+        web_app._memory_manager().update_preference(data.get("key", ""), data.get("value", ""))
+        return web_app._memory_payload()
+
+    @app.post("/api/memory/preference/delete")
+    async def memory_preference_delete(request: Request):
+        data = await request.json()
+        web_app._memory_manager().delete_preference(data.get("key", ""))
+        return web_app._memory_payload()
+
+    @app.post("/api/memory/forget")
+    async def memory_forget(request: Request):
+        data = await request.json()
+        if data.get("confirm") is not True:
+            raise HTTPException(status_code=403, detail="Explicit confirmation is required")
+        web_app._memory_manager().forget_project()
+        web_app.STATE["messages"].clear()
+        web_app.STATE["tools_log"].clear()
+        web_app.STATE["used_skills_log"].clear()
+        web_app.STATE["memory_session_id"] = uuid.uuid4().hex
+        web_app.STATE["memory_summary"] = ""
+        web_app.STATE["memory_summarized_count"] = 0
+        web_app.STATE["memory_retrieval_count"] = 0
+        web_app.STATE["memory_retrieved_facts"] = []
+        web_app.STATE["memory_context"] = ""
+        sid = request.headers.get("x-session-id")
+        return web_app._client_state(sid)
+
+    @app.post("/api/memory/compact")
+    async def memory_compact(request: Request):
+        web_app._compact_memory_if_needed()
+        try:
+            web_app._memory_manager().summarize_old_session(web_app.STATE["memory_session_id"])
+        except Exception:
+            pass
+        sid = request.headers.get("x-session-id")
+        return web_app._client_state(sid)
+
+    @app.post("/api/clear")
+    async def clear_session(request: Request):
+        sid = request.headers.get("x-session-id")
+        return web_app._clear_session_state(sid)
+
+    @app.get("/api/file")
+    async def get_file(request: Request):
+        rel = request.query_params.get("path", "")
+        try:
+            return web_app._read_file(rel)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.post("/api/file")
+    @app.post("/api/file/write")
+    async def write_file_endpoint(request: Request):
+        data = await request.json()
+        rel = data.get("path", "")
+        content = data.get("content", "")
+        web_app._write_file(rel, content)
+        return {"ok": True, "path": rel}
+
+    @app.get("/api/git")
+    async def get_git():
+        return web_app._git_snapshot()
+
+    @app.post("/api/git/commit")
+    async def git_commit(request: Request):
+        data = await request.json()
+        msg = data.get("message", "Update via CoderAI")
+        ok, out = web_app._git_manager().commit(msg)
+        return {"ok": ok, "output": out, "git": web_app._git_snapshot()}
+
+    @app.post("/api/git/push")
+    async def git_push():
+        ok, out = web_app._git_manager().push()
+        return {"ok": ok, "output": out, "git": web_app._git_snapshot()}
+
+    @app.post("/api/git/auth")
+    async def git_auth(request: Request):
+        data = await request.json()
+        token = data.get("token", "")
+        repo_url = data.get("repo_url", "")
+        ok, out = web_app._git_manager().set_auth(token, repo_url)
+        return {"ok": ok, "output": out, "git": web_app._git_snapshot()}
+
+    @app.get("/api/approval")
+    async def get_approval():
+        return web_app.get_approval_state()
+
+    @app.post("/api/approval/respond")
+    async def respond_approval(request: Request):
+        data = await request.json()
+        approved = bool(data.get("approved"))
+        web_app.respond_to_approval(approved)
+        return {"ok": True}
+
+    @app.post("/api/scan")
+    async def scan_project(request: Request):
+        data = await request.json()
+        max_files = int(data.get("max_files", 200))
+        result = web_app.tool_scan_project(max_files)
+        sid = request.headers.get("x-session-id")
+        return {"result": result, "state": web_app._client_state(sid)}
+
+    @app.post("/api/skills/mode")
+    async def skill_mode(request: Request):
+        data = await request.json()
+        skill_name = str(data.get("skill_name") or "")
+        if not web_app.sm.get(skill_name):
+            raise HTTPException(status_code=404, detail="Skill not found")
+        target_workspace = web_app._known_project_workspace(data.get("workspace_path"))
+        web_app._skill_tracker(target_workspace).set_mode(skill_name, str(data.get("mode") or "auto"))
+        if data.get("workspace_path"):
+            return {"skill_usage": web_app._skill_usage_payload(target_workspace)}
+        sid = request.headers.get("x-session-id")
+        return web_app._client_state(sid)
+
+    @app.post("/api/skills/disable")
+    async def skill_disable(request: Request):
+        data = await request.json()
+        skill_name = str(data.get("skill_name") or "")
+        if not web_app.sm.get(skill_name):
+            raise HTTPException(status_code=404, detail="Skill not found")
+        web_app._skill_tracker().set_disabled(skill_name, bool(data.get("disabled")))
+        return web_app._skill_usage_payload()
+
+    @app.get("/api/skill/source")
+    async def get_skill_source(request: Request):
+        name = request.query_params.get("name", "")
+        skill = web_app.sm.get(name)
+        if not skill:
+            raise HTTPException(status_code=404, detail="Skill not found")
+        return {"name": skill.name, "path": str(skill.path), "content": skill.path.read_text(encoding="utf-8", errors="replace")}
+
+    @app.post("/api/skill/source")
+    async def save_skill_source(request: Request):
+        data = await request.json()
+        skill = web_app.sm.get(str(data.get("name") or ""))
+        if not skill:
+            raise HTTPException(status_code=404, detail="Skill not found")
+        skill.path.write_text(str(data.get("content") or ""), encoding="utf-8")
+        web_app.sm.reload()
+        web_app.skill_router.invalidate()
+        return {"ok": True, "name": skill.name, "skill_usage": web_app._skill_usage_payload()}
+
+    @app.get("/api/prompt")
+    async def get_prompt(request: Request):
+        name = request.query_params.get("name", "")
+        prompt = web_app.pm.get(name)
+        if not prompt:
+            raise HTTPException(status_code=404, detail="Prompt not found")
+        return {
+            "name": prompt.name,
+            "category": prompt.category,
+            "content": prompt.content,
+            "preview": prompt.preview,
+            "size": prompt.size,
+        }
+
+    @app.post("/api/prompt")
+    async def set_prompt(request: Request):
+        data = await request.json()
+        if data.get("selected_prompt"):
+            prompt = web_app.pm.get(data["selected_prompt"])
+            if not prompt:
+                raise HTTPException(status_code=404, detail="Prompt not found")
+            web_app.STATE["selected_prompt"] = prompt.name
+            web_app.STATE["system_prompt"] = prompt.content
+        elif "system_prompt" in data:
+            web_app.STATE["selected_prompt"] = None
+            web_app.STATE["system_prompt"] = data.get("system_prompt") or web_app.DEFAULT_SYSTEM_PROMPT
+        sid = request.headers.get("x-session-id")
+        return web_app._client_state(sid)
+
+    @app.get("/api/index")
+    async def get_index():
+        return web_app.CodebaseIndex(web_app.get_workspace()).status(check_freshness=True)
+
+    @app.get("/api/index/overview")
+    async def get_index_overview():
+        index = web_app.CodebaseIndex(web_app.get_workspace())
+        return {"overview": index.get_project_overview(), "graph": index.dependency_tree()}
+
+    @app.get("/api/browse")
+    @app.post("/api/browse")
+    async def browse_folder(request: Request):
+        initial = None
+        if request.method == "POST":
+            data = await request.json()
+            initial = data.get("initial_dir")
+        picked = web_app._browse_local_folder(initial or str(web_app.get_workspace()))
+        if not picked:
+            return {"ok": False, "cancelled": True, "message": "Folder selection was cancelled"}
+        ok, msg = web_app._activate_workspace_memory(picked)
+        return {"ok": ok, "message": msg, "workspace": web_app._workspace_snapshot(), "path": picked}
+
+    @app.get("/api/ollama/embedding-status")
+    async def get_embedding_status():
+        status = EmbeddingModelManager.get_instance().get_status()
+        status["dismissed"] = bool(web_app.STATE.get("embedding_dismissed"))
+        return status
+
+    @app.post("/api/ollama/pull-embedding")
+    async def pull_embedding():
+        mgr = EmbeddingModelManager.get_instance()
+        started = mgr.start_pull("embeddinggemma")
+        return {"ok": started, "status": mgr.get_status()}
+
+    @app.post("/api/ollama/dismiss-embedding")
+    async def dismiss_embedding():
+        web_app.STATE["embedding_dismissed"] = True
+        return {"ok": True}
 
     @app.post("/api/workspace")
     async def activate_workspace(request: Request):
@@ -298,6 +605,121 @@ def create_app() -> FastAPI:
         except (WebSocketDisconnect, Exception):
             cancel_current_execution()
             web_app.STATE["agent_running"] = False
+
+    # ══════════════════════════════════════════════════════════════════════════════
+    # ── Integrated Terminal Endpoints
+    # ══════════════════════════════════════════════════════════════════════════════
+    @app.get("/api/terminal/info")
+    async def terminal_info(request: Request):
+        session_id = request.query_params.get("session_id", "default")
+        session = terminal_manager.get_or_create_session(session_id, cwd=get_workspace())
+        return {
+            "session_id": session.session_id,
+            "shell_type": session.shell_type,
+            "cwd": str(session.cwd),
+            "is_running": session.is_running(),
+            "available_shells": terminal_manager.list_available_shells(),
+            "history": session.history[-30:],
+        }
+
+    @app.websocket("/api/terminal/ws")
+    async def terminal_websocket(websocket: WebSocket):
+        await websocket.accept()
+        session_id = websocket.query_params.get("session_id", "default")
+        shell = websocket.query_params.get("shell", "powershell")
+        ws_cwd = get_workspace()
+        session = terminal_manager.get_or_create_session(session_id, shell_type=shell, cwd=ws_cwd)
+
+        loop = asyncio.get_running_loop()
+
+        async def send_terminal_output():
+            while True:
+                try:
+                    event = await loop.run_in_executor(None, session.output_queue.get)
+                    if event:
+                        text = event.get("data") or event.get("text", "")
+                        if text:
+                            await websocket.send_text(text)
+                except asyncio.CancelledError:
+                    break
+                except Exception:
+                    break
+
+        sender_task = asyncio.create_task(send_terminal_output())
+
+        try:
+            while True:
+                msg = await websocket.receive_text()
+                try:
+                    data = json.loads(msg)
+                    if isinstance(data, dict):
+                        mtype = data.get("type")
+                        if mtype == "input":
+                            session.write(data.get("data", ""))
+                            continue
+                        elif mtype == "resize":
+                            session.resize(int(data.get("rows", 24)), int(data.get("cols", 80)))
+                            continue
+                        elif mtype == "restart":
+                            session.restart(data.get("shell", session.shell_type))
+                            continue
+                        elif mtype == "kill":
+                            session.kill()
+                            continue
+                except Exception:
+                    pass
+                session.write(msg)
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            pass
+        finally:
+            sender_task.cancel()
+
+    @app.get("/api/terminal/stream")
+    async def terminal_stream(request: Request):
+        session_id = request.query_params.get("session_id", "default")
+        session = terminal_manager.get_or_create_session(session_id, cwd=get_workspace())
+
+        def event_stream():
+            for event in session.stream_events():
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+    @app.post("/api/terminal/exec")
+    async def terminal_exec(request: Request):
+        data = await request.json()
+        session_id = data.get("session_id", "default")
+        command = data.get("command", "")
+        shell_type = data.get("shell_type", "powershell")
+        cwd = data.get("cwd") or str(get_workspace())
+        session = terminal_manager.get_or_create_session(session_id, shell_type=shell_type, cwd=Path(cwd))
+        if session.is_running():
+            session.write_stdin(command)
+        elif command.strip():
+            session.execute(command.strip(), cwd=Path(cwd) if cwd else None)
+        return {"ok": True, "is_running": session.is_running(), "cwd": str(session.cwd)}
+
+    @app.post("/api/terminal/kill")
+    async def terminal_kill(request: Request):
+        data = await request.json()
+        session_id = data.get("session_id", "default")
+        session = terminal_manager.get_or_create_session(session_id, cwd=get_workspace())
+        killed = session.kill()
+        return {"ok": True, "killed": killed}
+
+    @app.post("/api/terminal/clear")
+    async def terminal_clear(request: Request):
+        data = await request.json()
+        session_id = data.get("session_id", "default")
+        session = terminal_manager.get_or_create_session(session_id, cwd=get_workspace())
+        while not session.output_queue.empty():
+            try:
+                session.output_queue.get_nowait()
+            except Exception:
+                break
+        return {"ok": True}
 
     # Mount static assets
     if static_dir.exists():

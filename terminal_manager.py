@@ -1,0 +1,309 @@
+"""
+terminal_manager.py - Manages native pseudoterminal (PTY) and shell sessions
+powered by ConPTY/WinPTY and xterm.js (the technology behind VS Code's integrated terminal).
+"""
+
+from __future__ import annotations
+
+import os
+import queue
+import shutil
+import subprocess
+import threading
+import time
+from pathlib import Path
+from typing import Generator
+
+try:
+    import winpty
+    HAS_WINPTY = True
+except Exception:
+    HAS_WINPTY = False
+
+
+class TerminalSession:
+    """Represents an interactive terminal execution session."""
+
+    def __init__(
+        self,
+        session_id: str,
+        shell_type: str = "powershell",
+        cwd: Path | None = None,
+        rows: int = 24,
+        cols: int = 80,
+    ):
+        self.session_id = session_id
+        self.shell_type = shell_type.lower()
+        self.cwd = Path(cwd or Path.cwd()).resolve()
+        self.rows = max(5, rows)
+        self.cols = max(10, cols)
+        self.pty_proc: winpty.PtyProcess | None = None
+        self.active_process: subprocess.Popen | None = None
+        self.output_queue: queue.Queue[dict] = queue.Queue()
+        self.history: list[str] = []
+        self._lock = threading.Lock()
+        self._is_running = False
+        self._reader_thread: threading.Thread | None = None
+
+        self.start_shell()
+
+    def get_shell_command_args(self) -> list[str]:
+        if self.shell_type in {"cmd", "command prompt", "cmd.exe"}:
+            return ["cmd.exe"]
+        if self.shell_type in {"bash", "git bash", "git-bash"}:
+            bash_path = shutil.which("bash") or r"C:\Program Files\Git\bin\bash.exe"
+            if os.path.exists(bash_path):
+                return [bash_path]
+        pwsh = shutil.which("pwsh") or shutil.which("powershell") or "powershell.exe"
+        return [pwsh, "-NoLogo"]
+
+    def start_shell(self) -> None:
+        with self._lock:
+            self._close_internal()
+            if not self.cwd.exists():
+                self.cwd = Path.cwd().resolve()
+
+            shell_args = self.get_shell_command_args()
+
+            if HAS_WINPTY:
+                try:
+                    self.pty_proc = winpty.PtyProcess.spawn(
+                        shell_args,
+                        cwd=str(self.cwd),
+                        dimensions=(self.rows, self.cols),
+                    )
+                    self._is_running = True
+                    self._reader_thread = threading.Thread(target=self._pty_reader, daemon=True)
+                    self._reader_thread.start()
+                    return
+                except Exception as exc:
+                    self.output_queue.put({"type": "output", "text": f"\r\n[WinPTY error: {exc}]\r\n", "data": f"\r\n[WinPTY error: {exc}]\r\n"})
+
+            # Fallback to standard subprocess
+            try:
+                env = os.environ.copy()
+                env["PYTHONUNBUFFERED"] = "1"
+                env["PYTHONIOENCODING"] = "utf-8"
+                env["TERM"] = "xterm-256color"
+
+                self.active_process = subprocess.Popen(
+                    shell_args,
+                    cwd=str(self.cwd),
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=0,
+                    universal_newlines=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    env=env,
+                )
+                self._is_running = True
+                self._reader_thread = threading.Thread(target=self._proc_reader, daemon=True)
+                self._reader_thread.start()
+            except Exception as exc:
+                self._is_running = False
+                self.output_queue.put({"type": "output", "text": f"\r\n[Process error: {exc}]\r\n", "data": f"\r\n[Process error: {exc}]\r\n"})
+
+    def _pty_reader(self) -> None:
+        while True:
+            proc = self.pty_proc
+            if not proc or not proc.isalive():
+                break
+            try:
+                data = proc.read()
+                if data:
+                    self.output_queue.put({"type": "raw", "data": data, "text": data})
+                else:
+                    time.sleep(0.01)
+            except EOFError:
+                break
+            except Exception:
+                time.sleep(0.01)
+        with self._lock:
+            self._is_running = False
+
+    def _proc_reader(self) -> None:
+        proc = self.active_process
+        if not proc or not proc.stdout:
+            return
+        try:
+            while True:
+                char = proc.stdout.read(1)
+                if not char:
+                    if proc.poll() is not None:
+                        break
+                    time.sleep(0.02)
+                    continue
+                buf = [char]
+                while True:
+                    try:
+                        next_char = proc.stdout.read(1)
+                        if next_char:
+                            buf.append(next_char)
+                            if next_char == "\n" or len(buf) >= 512:
+                                break
+                        else:
+                            break
+                    except Exception:
+                        break
+                data = "".join(buf)
+                self.output_queue.put({"type": "raw", "data": data, "text": data})
+        except Exception as exc:
+            self.output_queue.put({"type": "output", "text": f"\r\n[Read error: {exc}]\r\n", "data": f"\r\n[Read error: {exc}]\r\n"})
+        finally:
+            with self._lock:
+                self._is_running = False
+
+    def write(self, data: str) -> None:
+        with self._lock:
+            if self.pty_proc and self.pty_proc.isalive():
+                try:
+                    self.pty_proc.write(data)
+                except Exception:
+                    pass
+            elif self.active_process and self.active_process.poll() is None and self.active_process.stdin:
+                try:
+                    self.active_process.stdin.write(data)
+                    self.active_process.stdin.flush()
+                except Exception:
+                    pass
+
+    def write_stdin(self, text: str) -> bool:
+        self.write(text + "\r\n")
+        return True
+
+    def execute(self, command: str, cwd: Path | None = None) -> None:
+        if cwd and cwd != self.cwd:
+            self.set_cwd(cwd)
+        if not self.is_running():
+            self.start_shell()
+        self.history.append(command)
+        self.write(command + "\r\n")
+
+    def resize(self, rows: int, cols: int) -> None:
+        self.rows = max(5, rows)
+        self.cols = max(10, cols)
+        with self._lock:
+            if self.pty_proc and self.pty_proc.isalive():
+                try:
+                    self.pty_proc.setwinsize(self.rows, self.cols)
+                except Exception:
+                    pass
+
+    def restart(self, shell_type: str | None = None) -> None:
+        if shell_type:
+            self.shell_type = shell_type.lower()
+        self.start_shell()
+
+    def _close_internal(self) -> None:
+        if self.pty_proc and self.pty_proc.isalive():
+            try:
+                self.pty_proc.terminate()
+            except Exception:
+                pass
+            self.pty_proc = None
+        if self.active_process and self.active_process.poll() is None:
+            try:
+                self.active_process.kill()
+            except Exception:
+                pass
+            self.active_process = None
+        self._is_running = False
+
+    def kill(self) -> bool:
+        with self._lock:
+            if self.pty_proc and self.pty_proc.isalive():
+                # Send Ctrl+C (0x03)
+                try:
+                    self.pty_proc.write("\x03")
+                    return True
+                except Exception:
+                    pass
+            elif self.active_process and self.active_process.poll() is None:
+                try:
+                    self.active_process.kill()
+                    return True
+                except Exception:
+                    pass
+            return False
+
+    def is_running(self) -> bool:
+        with self._lock:
+            if self.pty_proc:
+                return self.pty_proc.isalive()
+            if self.active_process:
+                return self.active_process.poll() is None
+            return False
+
+    def set_cwd(self, new_cwd: str | Path) -> bool:
+        p = Path(new_cwd).resolve()
+        if p.exists() and p.is_dir():
+            self.cwd = p
+            self.start_shell()
+            return True
+        return False
+
+    def stream_events(self) -> Generator[dict, None, None]:
+        while True:
+            try:
+                event = self.output_queue.get(timeout=1.0)
+                yield event
+            except queue.Empty:
+                yield {"type": "ping"}
+
+
+class TerminalManager:
+    _instance: TerminalManager | None = None
+
+    def __new__(cls) -> TerminalManager:
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._sessions = {}
+            cls._instance._lock = threading.Lock()
+        return cls._instance
+
+    def get_or_create_session(
+        self,
+        session_id: str = "default",
+        shell_type: str = "powershell",
+        cwd: Path | None = None,
+        rows: int = 24,
+        cols: int = 80,
+    ) -> TerminalSession:
+        with self._lock:
+            if session_id not in self._sessions:
+                self._sessions[session_id] = TerminalSession(
+                    session_id,
+                    shell_type=shell_type,
+                    cwd=cwd,
+                    rows=rows,
+                    cols=cols,
+                )
+            else:
+                session = self._sessions[session_id]
+                if shell_type and session.shell_type != shell_type.lower():
+                    session.restart(shell_type)
+                elif cwd and session.cwd != Path(cwd).resolve():
+                    session.set_cwd(cwd)
+            return self._sessions[session_id]
+
+    def remove_session(self, session_id: str) -> None:
+        with self._lock:
+            session = self._sessions.pop(session_id, None)
+            if session:
+                session._close_internal()
+
+    def list_available_shells(self) -> list[dict]:
+        shells = [
+            {"id": "powershell", "name": "PowerShell", "available": bool(shutil.which("powershell") or shutil.which("pwsh"))},
+            {"id": "cmd", "name": "Command Prompt", "available": bool(shutil.which("cmd.exe") or os.name == "nt")},
+        ]
+        bash = shutil.which("bash") or r"C:\Program Files\Git\bin\bash.exe"
+        if os.path.exists(bash):
+            shells.append({"id": "bash", "name": "Git Bash", "available": True})
+        return shells
+
+
+terminal_manager = TerminalManager()

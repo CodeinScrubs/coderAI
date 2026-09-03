@@ -29,7 +29,7 @@ def test_embedding_provider_falls_back_to_legacy_ollama_endpoint(monkeypatch):
         return _Response({"embedding": [0.1, 0.2]})
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-    vectors = LocalEmbeddingProvider().embed(["first", "second"])
+    vectors = LocalEmbeddingProvider(model="nomic-embed-text").embed(["first", "second"])
 
     assert vectors == [[0.1, 0.2], [0.1, 0.2]]
     assert urls == [
@@ -37,3 +37,26 @@ def test_embedding_provider_falls_back_to_legacy_ollama_endpoint(monkeypatch):
         "http://127.0.0.1:11434/api/embeddings",
         "http://127.0.0.1:11434/api/embeddings",
     ]
+
+
+def test_resolve_embedding_model(monkeypatch):
+    from vector_store import resolve_embedding_model, is_embeddinggemma_available, EmbeddingModelManager
+
+    monkeypatch.setattr("vector_store.list_ollama_models", lambda *args, **kwargs: ["embeddinggemma:latest", "llama3:8b"])
+    assert is_embeddinggemma_available() is True
+    assert resolve_embedding_model() == "embeddinggemma"
+
+    monkeypatch.setattr("vector_store.list_ollama_models", lambda *args, **kwargs: ["nomic-embed-text:latest"])
+    assert is_embeddinggemma_available() is False
+    assert resolve_embedding_model() == "nomic-embed-text"
+
+
+def test_embedding_model_manager_status(monkeypatch):
+    from vector_store import EmbeddingModelManager
+
+    monkeypatch.setattr("vector_store.list_ollama_models", lambda *args, **kwargs: ["embeddinggemma:latest"])
+    mgr = EmbeddingModelManager.get_instance()
+    status = mgr.get_status()
+    assert status["installed"] is True
+    assert status["target_model"] == "embeddinggemma"
+

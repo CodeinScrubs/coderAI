@@ -35,6 +35,8 @@ from skill_tracker import SkillTracker
 from skill_router import SkillRouter
 from codebase_index import CodebaseIndex
 from workspace_filter import iter_workspace_files
+from terminal_manager import terminal_manager
+from vector_store import EmbeddingModelManager
 from tools import (
     TOOL_SCHEMAS, execute_tool, get_workspace, set_tavily_config, set_workspace,
     tool_scan_project, get_approval_state, approve_pending, reject_pending, clear_approval_state,
@@ -255,10 +257,25 @@ lc_runtime = LangChainRuntime()
 skill_router = SkillRouter()
 
 
+def _normalize_conn_mode(mode: str | None) -> str:
+    m = str(mode or "").strip().lower()
+    if "custom" in m:
+        return MODE_CUSTOM
+    return MODE_LOCAL
+
+
 def _active_model() -> str:
-    if STATE.get("conn_mode") == MODE_CUSTOM:
+    if "custom" in str(STATE.get("conn_mode") or "").lower():
         return str(STATE.get("custom_api_model") or "gpt-4o-mini").strip()
     return str(STATE.get("model") or "gemma4:12b").strip()
+
+
+def _active_model_display() -> str:
+    if "custom" in str(STATE.get("conn_mode") or "").lower():
+        model = str(STATE.get("custom_api_model") or "gpt-4o-mini").strip()
+        return f"Custom API ({model})"
+    model = str(STATE.get("model") or "gemma4:12b").strip()
+    return f"Ollama ({model})"
 
 
 def _skill_tracker(workspace: str | Path | None = None) -> SkillTracker:
@@ -1103,22 +1120,40 @@ def _windows_powershell_path() -> str | None:
 
 def _post_json(url: str, payload: dict, headers: dict | None = None) -> dict:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req_headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "CoderAI/1.0",
+        **(headers or {}),
+    }
     req = urllib.request.Request(
         url,
         data=body,
-        headers={"Content-Type": "application/json", **(headers or {})},
+        headers=req_headers,
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        raw = resp.read().decode("utf-8", errors="replace").strip()
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, ValueError) as err:
+            raise ValueError(f"Failed to parse JSON response from {url}: {raw[:120]}") from err
 
 
 def _post_json_stream(url: str, payload: dict, headers: dict | None = None):
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req_headers = {
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream, application/x-ndjson, application/json",
+        "User-Agent": "CoderAI/1.0",
+        **(headers or {}),
+    }
     req = urllib.request.Request(
         url,
         data=body,
-        headers={"Content-Type": "application/json", **(headers or {})},
+        headers=req_headers,
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
@@ -1126,11 +1161,21 @@ def _post_json_stream(url: str, payload: dict, headers: dict | None = None):
             line = raw_line.decode("utf-8", errors="replace").strip()
             if not line:
                 continue
+            # Ignore SSE comment and keep-alive lines (e.g. ": ping", ": keepalive")
+            if line.startswith(":"):
+                continue
+            if line.startswith("event:") or line.startswith("id:") or line.startswith("retry:"):
+                continue
             if line.startswith("data:"):
                 line = line[5:].strip()
+            if not line:
+                continue
             if line == "[DONE]":
                 break
-            yield json.loads(line)
+            try:
+                yield json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
 
 
 def _format_agent_error(exc: Exception) -> str:
@@ -1159,10 +1204,21 @@ def _format_agent_error(exc: Exception) -> str:
     )
 
 
-def _get_json(url: str, headers: dict | None = None, timeout: int = 8) -> dict:
-    req = urllib.request.Request(url, headers=headers or {}, method="GET")
+def _get_json(url: str, headers: dict | None = None, timeout: int = 15) -> dict:
+    req_headers = {
+        "Accept": "application/json",
+        "User-Agent": "CoderAI/1.0",
+        **(headers or {}),
+    }
+    req = urllib.request.Request(url, headers=req_headers, method="GET")
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        raw = resp.read().decode("utf-8", errors="replace").strip()
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, ValueError) as err:
+            raise ValueError(f"Failed to parse JSON response from {url}: {raw[:120]}") from err
 
 
 def _available_models() -> dict:
@@ -1172,23 +1228,28 @@ def _available_models() -> dict:
             data = _get_json("http://127.0.0.1:11434/api/tags")
             raw_models = data.get("models", [])
             names = [m.get("model") or m.get("name") for m in raw_models if isinstance(m, dict)]
+            names = [name for name in names if name]
+            preferred = next((name for name in names if not name.endswith(":cloud")), names[0] if names else STATE["model"])
+            if names and (STATE["model"] not in names or (not STATE["model_user_selected"] and STATE["model"].endswith(":cloud"))):
+                STATE["model"] = preferred
+            return {"models": names, "selected_model": STATE["model"], "error": None}
         else:
-            headers = {}
-            if STATE["custom_api_key"]:
-                headers["Authorization"] = f"Bearer {STATE['custom_api_key']}"
-            data = _get_json(f"{STATE['custom_api_url'].rstrip('/')}/models", headers=headers)
-            raw_models = data.get("data", []) if isinstance(data, dict) else []
-            names = [m.get("id") or m.get("name") for m in raw_models if isinstance(m, dict)]
-        names = [name for name in names if name]
-        if conn_mode == MODE_CUSTOM:
             selected = _active_model()
+            names = []
+            try:
+                headers = {}
+                if STATE.get("custom_api_key"):
+                    headers["Authorization"] = f"Bearer {STATE['custom_api_key']}"
+                models_url = f"{STATE.get('custom_api_url', '').rstrip('/')}/models"
+                data = _get_json(models_url, headers=headers, timeout=12)
+                raw_models = data.get("data", []) if isinstance(data, dict) else []
+                names = [m.get("id") or m.get("name") for m in raw_models if isinstance(m, dict)]
+            except Exception:
+                names = []
+            names = [name for name in names if name]
             if selected and selected not in names:
                 names.insert(0, selected)
             return {"models": names, "selected_model": selected, "error": None}
-        preferred = next((name for name in names if not name.endswith(":cloud")), names[0] if names else STATE["model"])
-        if names and (STATE["model"] not in names or (not STATE["model_user_selected"] and STATE["model"].endswith(":cloud"))):
-            STATE["model"] = preferred
-        return {"models": names, "selected_model": STATE["model"], "error": None}
     except Exception as exc:
         return {"models": [_active_model()], "selected_model": _active_model(), "error": str(exc)}
 
@@ -1304,10 +1365,11 @@ def _runtime_settings() -> RuntimeSettings:
 def _call_model(history: list[dict]) -> dict:
     response_budget = max(512, int(STATE.get("response_token_budget") or DEFAULT_RESPONSE_TOKEN_BUDGET))
     conn_mode = STATE["conn_mode"]
+    is_custom = "custom" in str(conn_mode).lower()
     if _use_langchain_runtime() and lc_runtime.supports(conn_mode):
         return lc_runtime.invoke(history, _active_tool_schemas(), _runtime_settings())
 
-    if conn_mode == MODE_LOCAL:
+    if not is_custom:
         data = _post_json(
             "http://127.0.0.1:11434/api/chat",
             {
@@ -1345,9 +1407,13 @@ def _call_model(history: list[dict]) -> dict:
     choices = data.get("choices", [])
     msg = choices[0].get("message", {}) if choices else {}
     finish_reason = choices[0].get("finish_reason", "") if choices else ""
+    content = msg.get("content", "") or ""
+    thinking = msg.get("reasoning_content", "") or msg.get("reasoning", "") or ""
+    if not content and thinking:
+        content = thinking
     return {
-        "content": msg.get("content", "") or "",
-        "thinking": msg.get("reasoning_content", "") or "",
+        "content": content,
+        "thinking": thinking,
         "tool_calls": _extract_tool_calls_openai(msg),
         "finish_reason": finish_reason or "",
     }
@@ -1375,13 +1441,14 @@ def _merge_custom_tool_delta(tool_calls: dict, delta_calls: list[dict]) -> None:
 def _call_model_stream(history: list[dict], write_event) -> dict:
     response_budget = max(512, int(STATE.get("response_token_budget") or DEFAULT_RESPONSE_TOKEN_BUDGET))
     conn_mode = STATE["conn_mode"]
+    is_custom = "custom" in str(conn_mode).lower()
     if _use_langchain_runtime() and _use_langchain_streaming_runtime() and lc_runtime.supports(conn_mode):
         return lc_runtime.stream(history, _active_tool_schemas(), _runtime_settings(), write_event)
 
     content_parts: list[str] = []
     thinking_parts: list[str] = []
 
-    if conn_mode == MODE_LOCAL:
+    if not is_custom:
         tool_calls_raw: list[dict] = []
         finish_reason = ""
         for event in _post_json_stream(
@@ -1445,7 +1512,7 @@ def _call_model_stream(history: list[dict], write_event) -> dict:
         finish_reason = choices[0].get("finish_reason") or finish_reason
         delta = choices[0].get("delta", {}) or {}
         content = delta.get("content") or ""
-        thinking = delta.get("reasoning_content") or ""
+        thinking = delta.get("reasoning_content") or delta.get("reasoning") or ""
         if thinking:
             thinking_parts.append(thinking)
         if content:
@@ -1453,8 +1520,13 @@ def _call_model_stream(history: list[dict], write_event) -> dict:
             write_event({"type": "token", "content": content})
         _merge_custom_tool_delta(tool_call_deltas, delta.get("tool_calls") or [])
 
+    final_content = "".join(content_parts)
+    if not final_content and thinking_parts:
+        final_content = "".join(thinking_parts)
+        write_event({"type": "token", "content": final_content})
+
     return {
-        "content": "".join(content_parts),
+        "content": final_content,
         "thinking": "".join(thinking_parts),
         "tool_calls": _extract_tool_calls_openai({"tool_calls": [tool_call_deltas[i] for i in sorted(tool_call_deltas)]}),
         "finish_reason": finish_reason,
@@ -1864,7 +1936,7 @@ def _run_agent_stream(prompt: str, write_event, active_context: dict | None = No
                 break
             write_event({
                 "type": "status",
-                "message": f"Waiting for {STATE['model']} ({iteration + 1}/{MAX_ITERATIONS}, timeout {REQUEST_TIMEOUT}s)...",
+                "message": f"Waiting for {_active_model_display()} ({iteration + 1}/{MAX_ITERATIONS}, timeout {REQUEST_TIMEOUT}s)...",
             })
             result = _call_model_stream(history, write_event)
             thinking_text += result.get("thinking", "") or ""
@@ -2013,12 +2085,45 @@ def _client_state(session_id: str | None = None) -> dict:
     }
 
 
+def _clear_session_state(session_id: str | None = None) -> dict:
+    st = get_session_state(session_id)
+    try:
+        _memory_manager().summarize_old_session(st.get("memory_session_id", ""))
+    except Exception:
+        pass
+    st["messages"].clear()
+    st["tools_log"].clear()
+    st["used_skills_log"].clear()
+    st["memory_summary"] = ""
+    st["memory_summarized_count"] = 0
+    st["memory_session_id"] = uuid.uuid4().hex
+    st["memory_retrieval_count"] = 0
+    st["memory_retrieved_facts"] = []
+    st["memory_context"] = ""
+    if st is not STATE:
+        STATE["messages"].clear()
+        STATE["tools_log"].clear()
+        STATE["used_skills_log"].clear()
+        STATE["memory_summary"] = ""
+        STATE["memory_summarized_count"] = 0
+        STATE["memory_session_id"] = st["memory_session_id"]
+        STATE["memory_retrieval_count"] = 0
+        STATE["memory_retrieved_facts"] = []
+        STATE["memory_context"] = ""
+    return _client_state(session_id)
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
         if path == "/api/approval":
             _send_json(self, get_approval_state())
+            return
+        if path == "/api/ollama/embedding-status":
+            status = EmbeddingModelManager.get_instance().get_status()
+            status["dismissed"] = bool(STATE.get("embedding_dismissed"))
+            _send_json(self, status)
             return
         if path == "/api/git":
             _send_json(self, _git_snapshot())
@@ -2094,6 +2199,36 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 _send_json(self, {"error": str(exc)}, 400)
             return
+        if path == "/api/terminal/info":
+            session_id = parse_qs(parsed.query).get("session_id", ["default"])[0]
+            session = terminal_manager.get_or_create_session(session_id, cwd=get_workspace())
+            _send_json(self, {
+                "session_id": session.session_id,
+                "shell_type": session.shell_type,
+                "cwd": str(session.cwd),
+                "is_running": session.is_running(),
+                "available_shells": terminal_manager.list_available_shells(),
+                "history": session.history[-30:],
+            })
+            return
+        if path == "/api/terminal/stream":
+            session_id = parse_qs(parsed.query).get("session_id", ["default"])[0]
+            session = terminal_manager.get_or_create_session(session_id, cwd=get_workspace())
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+
+            for event in session.stream_events():
+                payload = f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode("utf-8")
+                try:
+                    self.wfile.write(payload)
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+            return
         if path == "/api/browse":
             picked = _browse_local_folder(str(get_workspace()))
             if picked:
@@ -2146,6 +2281,15 @@ class Handler(BaseHTTPRequestHandler):
                 model = _active_model() if data.get("use_model") else None
                 _send_json(self, CodebaseIndex(get_workspace()).regenerate_summaries(model=model))
                 return
+            if path == "/api/ollama/pull-embedding":
+                mgr = EmbeddingModelManager.get_instance()
+                started = mgr.start_pull("embeddinggemma")
+                _send_json(self, {"ok": started, "status": mgr.get_status()})
+                return
+            if path == "/api/ollama/dismiss-embedding":
+                STATE["embedding_dismissed"] = True
+                _send_json(self, {"ok": True})
+                return
             if path == "/api/browse":
                 picked = _browse_local_folder(data.get("initial_dir") or str(get_workspace()))
                 if not picked:
@@ -2159,10 +2303,9 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
             if path == "/api/settings":
-                requested_mode = data.get("conn_mode", STATE["conn_mode"])
                 for key in (
                     "conn_mode", "temperature", "enable_thinking",
-                    "custom_api_url", "custom_api_key", "custom_api_model", "memory_enabled",
+                    "custom_api_url", "memory_enabled",
                     "context_token_budget", "response_token_budget", "auto_continue",
                     "tavily_enabled", "tavily_api_key",
                     "git_approval_mode",
@@ -2171,10 +2314,22 @@ class Handler(BaseHTTPRequestHandler):
                 ):
                     if key in data:
                         STATE[key] = data[key]
-                if requested_mode == MODE_LOCAL and "model" in data:
-                    STATE["model"] = str(data.get("model") or STATE["model"]).strip()
-                elif requested_mode == MODE_CUSTOM and not str(STATE.get("custom_api_model") or "").strip():
-                    STATE["custom_api_model"] = str(data.get("model") or "gpt-4o-mini").strip()
+                if "custom_api_key" in data and str(data["custom_api_key"] or "").strip():
+                    STATE["custom_api_key"] = str(data["custom_api_key"]).strip()
+                if "custom_api_model" in data and str(data["custom_api_model"] or "").strip():
+                    STATE["custom_api_model"] = str(data["custom_api_model"]).strip()
+
+                is_custom = "custom" in str(STATE.get("conn_mode") or "").lower()
+                if is_custom:
+                    if "model" in data and str(data["model"] or "").strip() and data["model"] != "gemma4:12b":
+                        STATE["custom_api_model"] = str(data["model"]).strip()
+                    if str(STATE.get("custom_api_model") or "").strip():
+                        STATE["model"] = STATE["custom_api_model"]
+                else:
+                    if "model" in data and str(data["model"] or "").strip():
+                        STATE["model"] = str(data["model"]).strip()
+                        STATE["model_user_selected"] = True
+
                 STATE["custom_api_model"] = str(STATE.get("custom_api_model") or "gpt-4o-mini").strip()
                 if "tavily_api_key" in data:
                     STATE["tavily_api_key"] = str(data.get("tavily_api_key") or "").strip()
@@ -2184,8 +2339,6 @@ class Handler(BaseHTTPRequestHandler):
                 for key in ("context_token_budget", "response_token_budget"):
                     if key in STATE:
                         STATE[key] = max(512, int(STATE[key]))
-                if requested_mode == MODE_LOCAL and "model" in data:
-                    STATE["model_user_selected"] = True
                 _save_persisted_settings()
                 _send_json(self, _client_state())
                 return
@@ -2500,6 +2653,34 @@ class Handler(BaseHTTPRequestHandler):
                 commit_hash = path.rsplit("/", 1)[-1]
                 new_hash = GitManager(get_workspace()).revert_to(commit_hash)
                 _send_json(self, {"ok": True, "commit": new_hash, "git": _git_snapshot()})
+                return
+            if path == "/api/terminal/exec":
+                session_id = data.get("session_id", "default")
+                command = data.get("command", "")
+                shell_type = data.get("shell_type", "powershell")
+                cwd = data.get("cwd") or str(get_workspace())
+                session = terminal_manager.get_or_create_session(session_id, shell_type=shell_type, cwd=Path(cwd))
+                if session.is_running():
+                    session.write_stdin(command)
+                elif command.strip():
+                    session.execute(command.strip(), cwd=Path(cwd) if cwd else None)
+                _send_json(self, {"ok": True, "is_running": session.is_running(), "cwd": str(session.cwd)})
+                return
+            if path == "/api/terminal/kill":
+                session_id = data.get("session_id", "default")
+                session = terminal_manager.get_or_create_session(session_id, cwd=get_workspace())
+                killed = session.kill()
+                _send_json(self, {"ok": True, "killed": killed})
+                return
+            if path == "/api/terminal/clear":
+                session_id = data.get("session_id", "default")
+                session = terminal_manager.get_or_create_session(session_id, cwd=get_workspace())
+                while not session.output_queue.empty():
+                    try:
+                        session.output_queue.get_nowait()
+                    except Exception:
+                        break
+                _send_json(self, {"ok": True})
                 return
             _send_json(self, {"error": "Not found"}, 404)
         except Exception as exc:

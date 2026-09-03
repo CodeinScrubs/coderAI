@@ -5,15 +5,145 @@ from __future__ import annotations
 import json
 import math
 import os
+import shutil
+import subprocess
+import threading
 import urllib.request
 import urllib.error
 from pathlib import Path
 
 
+def list_ollama_models(base_url: str | None = None) -> list[str]:
+    url = (base_url or os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")).rstrip("/")
+    req = urllib.request.Request(f"{url}/api/tags")
+    try:
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return [m.get("name", "") for m in data.get("models", [])]
+    except Exception:
+        return []
+
+
+def is_embeddinggemma_available(base_url: str | None = None) -> bool:
+    models = list_ollama_models(base_url)
+    return any("embeddinggemma" in m.lower() for m in models)
+
+
+def resolve_embedding_model(preferred: str | None = None, base_url: str | None = None) -> str:
+    if preferred:
+        return preferred
+    env_model = os.getenv("OLLAMA_EMBEDDING_MODEL")
+    if env_model:
+        return env_model
+    if is_embeddinggemma_available(base_url):
+        return "embeddinggemma"
+    return "nomic-embed-text"
+
+
+class EmbeddingModelManager:
+    _instance = None
+    _lock = threading.Lock()
+
+    def __init__(self):
+        self.is_pulling = False
+        self.progress_text = ""
+        self.error: str | None = None
+        self.completed = False
+        self.pull_thread: threading.Thread | None = None
+
+    @classmethod
+    def get_instance(cls) -> "EmbeddingModelManager":
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = EmbeddingModelManager()
+            return cls._instance
+
+    def get_status(self, base_url: str | None = None) -> dict:
+        installed = is_embeddinggemma_available(base_url)
+        return {
+            "installed": installed,
+            "target_model": "embeddinggemma",
+            "active_model": "embeddinggemma" if installed else "nomic-embed-text",
+            "is_pulling": self.is_pulling,
+            "progress_text": self.progress_text,
+            "completed": self.completed,
+            "error": self.error,
+        }
+
+    def start_pull(self, model: str = "embeddinggemma", base_url: str | None = None) -> bool:
+        with self._lock:
+            if self.is_pulling:
+                return True
+            self.is_pulling = True
+            self.progress_text = "Starting download..."
+            self.error = None
+            self.completed = False
+
+            def _worker():
+                try:
+                    ollama_bin = shutil.which("ollama")
+                    if ollama_bin:
+                        self.progress_text = f"Executing ollama pull {model}..."
+                        proc = subprocess.Popen(
+                            [ollama_bin, "pull", model],
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                            encoding="utf-8",
+                            errors="replace",
+                        )
+                        for line in iter(proc.stdout.readline, ""):
+                            line_str = line.strip()
+                            if line_str:
+                                self.progress_text = line_str
+                        proc.wait()
+                        if proc.returncode == 0:
+                            self.completed = True
+                            self.progress_text = "Download completed successfully!"
+                            self.is_pulling = False
+                            return
+
+                    # Fallback to Ollama HTTP /api/pull
+                    url = (base_url or os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")).rstrip("/")
+                    req = urllib.request.Request(
+                        f"{url}/api/pull",
+                        data=json.dumps({"name": model, "stream": True}).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                    )
+                    with urllib.request.urlopen(req, timeout=1800) as resp:
+                        for raw_line in resp:
+                            line = raw_line.decode("utf-8").strip()
+                            if not line:
+                                continue
+                            try:
+                                payload = json.loads(line)
+                                status = payload.get("status", "")
+                                completed = payload.get("completed", 0)
+                                total = payload.get("total", 0)
+                                if total > 0:
+                                    pct = int((completed / total) * 100)
+                                    self.progress_text = f"{status}: {pct}%"
+                                else:
+                                    self.progress_text = status
+                            except Exception:
+                                pass
+                    self.completed = True
+                    self.progress_text = "Download completed successfully!"
+                except Exception as exc:
+                    self.error = str(exc)
+                    self.progress_text = f"Download failed: {exc}"
+                finally:
+                    self.is_pulling = False
+
+            self.pull_thread = threading.Thread(target=_worker, daemon=True)
+            self.pull_thread.start()
+            return True
+
+
 class LocalEmbeddingProvider:
     def __init__(self, model: str | None = None, base_url: str | None = None, timeout: int = 8):
-        self.model = model or os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
         self.base_url = (base_url or os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")).rstrip("/")
+        self.model = model or resolve_embedding_model(base_url=self.base_url)
         self.timeout = timeout
 
     def embed(self, texts: str | list[str]) -> list[list[float]]:

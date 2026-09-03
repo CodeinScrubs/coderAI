@@ -1,0 +1,27 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "marketing-cro",
+  "version": "1.8.0",
+  "description": "Marketing and conversion optimization skills including CRO methodology, StoryBrand messaging, Scorecard Marketing lead generation, viral marketing (Contagious), and 1-Page Marketing Plan",
+  "author": {
+    "name": "Wondel.ai",
+    "url": "https://wondel.ai"
+  },
+  "homepage": "https://github.com/wondelai/skills",
+  "repository": "https://github.com/wondelai/skills",
+  "license": "MIT",
+  "keywords": [
+    "marketing",
+    "cro",
+    "conversion",
+    "storybrand",
+    "copywriting",
+    "lead-generation",
+    "virality",
+    "landing-page",
+    "ab-testing",
+    "quiz-funnel",
+    "go-viral",
+    "homepage-copy"
+  ]
+}

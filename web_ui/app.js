@@ -78,9 +78,22 @@ async function api(path, options = {}) {
     ...options,
     headers,
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || data.message || "Request failed");
+  let data = {};
+  try {
+    data = await res.json();
+  } catch (_) {}
+  if (!res.ok) {
+    const errorMsg = data.detail || data.error || data.message || `Request failed (${res.status} ${res.statusText})`;
+    throw new Error(errorMsg);
+  }
   return data;
+}
+
+async function postJson(path, body = {}) {
+  return api(path, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
 
 function escapeHtml(value) {
@@ -304,16 +317,13 @@ function renderState(data) {
     : "";
   state.contextUsage = data.context_usage || {};
   $("statusContext").textContent = `Context: ${Number(state.contextUsage.percent || 0)}%`;
-  updateTokenUsage();
   $("customApiUrl").value = data.settings.custom_api_url || "https://api.openai.com/v1";
-  $("topCustomApiUrl").value = data.settings.custom_api_url || "https://api.openai.com/v1";
   $("customApiModel").value = data.settings.custom_api_model || "gpt-4o-mini";
-  $("topCustomApiModel").value = data.settings.custom_api_model || "gpt-4o-mini";
   $("customApiKey").value = "";
-  $("topCustomApiKey").value = "";
+  if ($("modalCustomApiUrl") && !$("modalCustomApiUrl").value) $("modalCustomApiUrl").value = data.settings.custom_api_url || "https://api.openai.com/v1";
+  if ($("modalCustomApiModel") && !$("modalCustomApiModel").value) $("modalCustomApiModel").value = data.settings.custom_api_model || "gpt-4o-mini";
   if ($("sandboxMode")) $("sandboxMode").value = data.settings.sandbox_mode || "auto";
   if ($("sandboxDockerImage")) $("sandboxDockerImage").value = data.settings.sandbox_docker_image || "python:3.11-slim";
-  updateCustomApiPanel();
   $("systemPromptEditor").value = data.settings.system_prompt || "";
   $("selectedPromptName").textContent = data.settings.selected_prompt || "Custom system prompt";
   renderFiles();
@@ -430,15 +440,18 @@ function formatRelativeTime(timestamp) {
 }
 
 function showWorkbench() {
-  document.querySelector(".layout").classList.remove("hidden");
-  $("projectsView").classList.remove("active");
+  const layout = $("mainLayout") || document.querySelector(".layout");
+  if (layout) layout.classList.remove("hidden");
+  $("projectsView")?.classList.remove("active");
 }
 
 async function showProjects() {
-  document.querySelector(".layout").classList.add("hidden");
-  $("projectsView").classList.add("active");
-  $("projectsIndex").classList.remove("hidden");
-  $("projectHome").classList.remove("active");
+  document.body.classList.remove("utility-mode");
+  const layout = $("mainLayout") || document.querySelector(".layout");
+  if (layout) layout.classList.add("hidden");
+  $("projectsView")?.classList.add("active");
+  $("projectsIndex")?.classList.remove("hidden");
+  $("projectHome")?.classList.remove("active");
   const payload = await api("/api/projects");
   state.projectCards = payload.projects || [];
   renderProjectCards();
@@ -481,9 +494,11 @@ function renderProjectCards() {
   }).join("") || `<div class="memory-item-source">No projects yet. Use + New to add a workspace.</div>`;
 
   document.querySelectorAll(".project-card").forEach((card) => {
-    card.addEventListener("click", (e) => {
+    card.addEventListener("click", async (e) => {
       if (e.target.closest(".project-card-delete-btn")) return;
-      openProjectHome(Number(card.dataset.projectId));
+      document.querySelectorAll(".project-card").forEach((c) => c.classList.remove("selected"));
+      card.classList.add("selected");
+      await openProjectHome(Number(card.dataset.projectId));
     });
   });
 
@@ -496,20 +511,25 @@ function renderProjectCards() {
 }
 
 async function openProjectHome(projectId) {
-  const archive = await api("/api/memory/archive", { method: "POST", body: JSON.stringify({ project_id: projectId }) });
-  const card = state.projectCards.find((item) => Number(item.id) === projectId) || archive.project || {};
-  state.projectArchive = { ...archive, card };
-  $("projectsIndex").classList.add("hidden");
-  $("projectHome").classList.add("active");
-  $("projectHomeName").textContent = card.name || "Project";
-  $("projectHomePath").textContent = card.workspace_path || "";
-  $("projectSettingsPath").textContent = card.workspace_path || "";
-  $("projectSettingsGit").textContent = card.git?.is_repo ? `${card.git.branch || "Git"} · ${card.git.files?.length || 0} changes` : "Disabled";
-  if ($("deleteProjectBtn")) {
-    $("deleteProjectBtn").onclick = () => deleteProject(projectId, card.name);
+  try {
+    const archive = await api("/api/memory/archive", { method: "POST", body: JSON.stringify({ project_id: projectId }) });
+    const card = state.projectCards.find((item) => Number(item.id) === projectId) || archive.project || {};
+    state.projectArchive = { ...archive, card };
+    $("projectsIndex").classList.add("hidden");
+    $("projectHome").classList.add("active");
+    $("projectHomeName").textContent = card.name || "Project";
+    $("projectHomePath").textContent = card.workspace_path || "";
+    $("projectSettingsPath").textContent = card.workspace_path || "";
+    $("projectSettingsGit").textContent = card.git?.is_repo ? `${card.git.branch || "Git"} · ${card.git.files?.length || 0} changes` : "Disabled";
+    if ($("deleteProjectBtn")) {
+      $("deleteProjectBtn").onclick = () => deleteProject(projectId, card.name);
+    }
+    renderProjectHome();
+    activateProjectTab("overview");
+  } catch (err) {
+    console.error("Failed to open project home:", err);
+    alert(`Could not open project: ${err.message}`);
   }
-  renderProjectHome();
-  activateProjectTab("overview");
 }
 
 function renderProjectHome() {
@@ -565,6 +585,7 @@ async function openProjectInEditor(startSession = false) {
   if (!result.ok) throw new Error(result.message || "Could not open project");
   renderState(await api("/api/state"));
   if (startSession) renderState(await api("/api/clear", { method: "POST", body: JSON.stringify({}) }));
+  checkEmbeddingModelStatus();
   activateTab("files");
   showWorkbench(); setActiveActivity("Agent"); $("promptInput").focus();
 }
@@ -953,14 +974,37 @@ function renderTokenUsage(usage) {
 }
 
 function renderModels(modelPayload, activeModel) {
+  const isCustom = $("connMode")?.value?.includes("Custom") || String(state.data?.settings?.conn_mode || "").toLowerCase().includes("custom");
   const models = modelPayload.models || [];
   const selectedModel = modelPayload.selected_model || activeModel;
+
+  // Update hidden select for state compatibility
   const select = $("modelSelect");
-  const options = models.length ? models : [selectedModel || "llama3"];
-  select.innerHTML = options.map((name) => `
-    <option value="${escapeHtml(name)}" ${name === selectedModel ? "selected" : ""}>${escapeHtml(name)}</option>
-  `).join("");
-  select.title = modelPayload.error ? `Model refresh error: ${modelPayload.error}` : "Model";
+  if (select) {
+    const options = models.length ? models : [selectedModel || (isCustom ? "gpt-4o-mini" : "llama3")];
+    select.innerHTML = options.map((name) => `
+      <option value="${escapeHtml(name)}" ${name === selectedModel ? "selected" : ""}>${escapeHtml(name)}</option>
+    `).join("");
+  }
+
+  // Update modal Ollama select
+  const modalOllamaSelect = $("modalOllamaModelSelect");
+  if (modalOllamaSelect) {
+    const ollamaModels = models.length ? models : [selectedModel || "gemma4:12b"];
+    modalOllamaSelect.innerHTML = ollamaModels.map((name) => `
+      <option value="${escapeHtml(name)}" ${name === selectedModel ? "selected" : ""}>${escapeHtml(name)}</option>
+    `).join("");
+  }
+
+  // Update header chooseModelBtn label & icon
+  const customModel = $("modalCustomApiModel")?.value?.trim() || state.data?.settings?.custom_api_model || "gpt-4o-mini";
+  const ollamaModel = selectedModel || "gemma4:12b";
+  if ($("chooseModelIcon")) {
+    $("chooseModelIcon").textContent = isCustom ? "🔑" : "🖥️";
+  }
+  if ($("chooseModelLabel")) {
+    $("chooseModelLabel").textContent = isCustom ? `Custom: ${customModel}` : `Ollama: ${ollamaModel}`;
+  }
 }
 
 function renderFiles() {
@@ -1357,8 +1401,44 @@ async function browseWorkspace() {
   }
 }
 
-function updateCustomApiPanel() {
-  $("customApiPanel").classList.toggle("open", $("connMode").value === "🔑 Custom API");
+function openChooseModelModal() {
+  const modal = $("chooseModelModal");
+  if (!modal) return;
+  const isCustom = $("connMode")?.value?.includes("Custom") || String(state.data?.settings?.conn_mode || "").toLowerCase().includes("custom");
+  switchModelModeTab(isCustom ? "custom" : "ollama");
+
+  const settings = state.data?.settings || {};
+  if ($("modalCustomApiUrl")) $("modalCustomApiUrl").value = settings.custom_api_url || "https://api.openai.com/v1";
+  if ($("modalCustomApiKey")) $("modalCustomApiKey").value = "";
+  if ($("modalCustomApiModel")) $("modalCustomApiModel").value = settings.custom_api_model || "gpt-4o-mini";
+
+  modal.style.display = "flex";
+}
+
+function closeChooseModelModal() {
+  const modal = $("chooseModelModal");
+  if (modal) modal.style.display = "none";
+}
+
+function switchModelModeTab(tab) {
+  const isOllama = tab === "ollama";
+  const tabOllama = $("tabLocalOllama");
+  const tabCustom = $("tabCustomApi");
+  const secOllama = $("sectionLocalOllama");
+  const secCustom = $("sectionCustomApi");
+
+  if (tabOllama) {
+    tabOllama.classList.toggle("active", isOllama);
+    tabOllama.style.background = "";
+    tabOllama.style.color = "";
+  }
+  if (tabCustom) {
+    tabCustom.classList.toggle("active", !isOllama);
+    tabCustom.style.background = "";
+    tabCustom.style.color = "";
+  }
+  if (secOllama) secOllama.style.display = isOllama ? "grid" : "none";
+  if (secCustom) secCustom.style.display = !isOllama ? "grid" : "none";
 }
 
 function updateTavilyPanel(settings = state.data?.settings || {}) {
@@ -1371,30 +1451,35 @@ function updateTavilyPanel(settings = state.data?.settings || {}) {
 }
 
 async function saveSettings() {
-  const apiUrl = $("topCustomApiUrl").value.trim() || $("customApiUrl").value.trim() || "https://api.openai.com/v1";
-  const apiKey = $("topCustomApiKey").value || $("customApiKey").value;
-  const customApiModel = $("topCustomApiModel").value.trim() || $("customApiModel").value.trim() || "gpt-4o-mini";
+  const isCustom = $("connMode").value.includes("Custom") || String(state.data?.settings?.conn_mode || "").toLowerCase().includes("custom");
+  const apiUrl = ($("modalCustomApiUrl")?.value?.trim() || $("customApiUrl")?.value?.trim() || state.data?.settings?.custom_api_url || "https://api.openai.com/v1");
+  const apiKey = ($("modalCustomApiKey")?.value?.trim() || $("customApiKey")?.value?.trim() || "");
+  const customApiModel = ($("modalCustomApiModel")?.value?.trim() || $("customApiModel")?.value?.trim() || state.data?.settings?.custom_api_model || "gpt-4o-mini");
+
+  const payload = {
+    conn_mode: $("connMode").value,
+    model: $("modelSelect")?.value || $("modalOllamaModelSelect")?.value || "gemma4:12b",
+    temperature: Number($("temperature").value),
+    enable_thinking: $("thinking").checked,
+    auto_continue: $("autoContinue").checked,
+    memory_enabled: $("memoryEnabled").checked,
+    context_token_budget: Number($("contextTokenBudget").value),
+    response_token_budget: Number($("responseTokenBudget").value),
+    tavily_enabled: $("tavilyEnabled").checked,
+    tavily_api_key: $("tavilyApiKey").value,
+    git_approval_mode: $("gitApprovalMode").checked,
+    smart_skill_confirmation: $("smartSkillConfirmation").checked,
+    sandbox_mode: $("sandboxMode") ? $("sandboxMode").value : "auto",
+    sandbox_docker_image: $("sandboxDockerImage") ? $("sandboxDockerImage").value.trim() : "python:3.11-slim",
+    custom_api_url: apiUrl,
+    custom_api_model: customApiModel,
+  };
+  if (apiKey) {
+    payload.custom_api_key = apiKey;
+  }
   renderState(await api("/api/settings", {
     method: "POST",
-    body: JSON.stringify({
-      conn_mode: $("connMode").value,
-      model: $("modelSelect").value,
-      temperature: Number($("temperature").value),
-      enable_thinking: $("thinking").checked,
-      auto_continue: $("autoContinue").checked,
-      memory_enabled: $("memoryEnabled").checked,
-      context_token_budget: Number($("contextTokenBudget").value),
-      response_token_budget: Number($("responseTokenBudget").value),
-      tavily_enabled: $("tavilyEnabled").checked,
-      tavily_api_key: $("tavilyApiKey").value,
-      git_approval_mode: $("gitApprovalMode").checked,
-      smart_skill_confirmation: $("smartSkillConfirmation").checked,
-      sandbox_mode: $("sandboxMode") ? $("sandboxMode").value : "auto",
-      sandbox_docker_image: $("sandboxDockerImage") ? $("sandboxDockerImage").value.trim() : "python:3.11-slim",
-      custom_api_url: apiUrl,
-      custom_api_key: apiKey,
-      custom_api_model: customApiModel,
-    }),
+    body: JSON.stringify(payload),
   }));
 }
 
@@ -1620,14 +1705,20 @@ async function streamViaHttp(prompt, activeContext, ctx, controller) {
 }
 
 async function sendPrompt(prompt) {
-  setLoading(true, "Sending prompt...");
+  const isCustom = $("connMode")?.value?.includes("Custom");
+  const customModel = ($("topCustomApiModel")?.value?.trim() || $("customApiModel")?.value?.trim() || "gpt-4o-mini");
+  const localModel = ($("modelSelect")?.value || "gemma4:12b");
+  const targetLabel = isCustom ? `Custom API (${customModel})` : `Ollama (${localModel})`;
+  const waitingMsg = `Waiting for ${targetLabel}...`;
+
+  setLoading(true, waitingMsg);
   $("sendBtn").style.display = "none";
   $("stopBtn").style.display = "inline-flex";
   $("stopBtn").disabled = false;
   $("stopBtn").innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg> Stop`;
 
   let streamTarget = appendStreamingAssistant();
-  streamTarget.textContent = "Preparing request...";
+  streamTarget.textContent = waitingMsg;
   let streamText = "";
   let sawDone = false;
   const activeContext = currentActiveContext();
@@ -1810,14 +1901,105 @@ $("addMemoryFact").addEventListener("click", addMemoryFact);
 $("addMemoryPreference").addEventListener("click", addMemoryPreference);
 $("forgetProjectMemory").addEventListener("click", forgetProjectMemory);
 $("resumeMemorySession").addEventListener("click", resumeMemorySession);
-$("testSkills").addEventListener("click", testSkills);
+$("testSkills")?.addEventListener("click", testSkills);
 $("tavilyEnabled").addEventListener("change", () => updateTavilyPanel());
-$("saveTopCustomApi").addEventListener("click", refreshModels);
-$("refreshModels").addEventListener("click", refreshModels);
-$("modelSelect").addEventListener("change", saveSettings);
-$("connMode").addEventListener("change", () => {
-  updateCustomApiPanel();
-  refreshModels();
+
+// Choose Model Button & Modal
+$("chooseModelBtn")?.addEventListener("click", openChooseModelModal);
+$("chooseModelCloseX")?.addEventListener("click", closeChooseModelModal);
+$("chooseModelCancel")?.addEventListener("click", closeChooseModelModal);
+$("chooseCustomCancel")?.addEventListener("click", closeChooseModelModal);
+
+// Tabs
+$("tabLocalOllama")?.addEventListener("click", () => switchModelModeTab("ollama"));
+$("tabCustomApi")?.addEventListener("click", () => switchModelModeTab("custom"));
+
+// Refresh Ollama in modal
+$("modalRefreshOllama")?.addEventListener("click", async () => {
+  renderState(await api("/api/models"));
+});
+
+// Apply Local Ollama
+$("applyLocalOllama")?.addEventListener("click", async () => {
+  const selectedModel = $("modalOllamaModelSelect")?.value || "gemma4:12b";
+  if ($("connMode")) $("connMode").value = "🖥️ Local Ollama";
+  if ($("modelSelect")) $("modelSelect").value = selectedModel;
+
+  closeChooseModelModal();
+
+  const payload = {
+    conn_mode: "🖥️ Local Ollama",
+    model: selectedModel,
+    temperature: Number($("temperature").value),
+    enable_thinking: $("thinking").checked,
+    auto_continue: $("autoContinue").checked,
+    memory_enabled: $("memoryEnabled").checked,
+    context_token_budget: Number($("contextTokenBudget").value),
+    response_token_budget: Number($("responseTokenBudget").value),
+    tavily_enabled: $("tavilyEnabled").checked,
+    tavily_api_key: $("tavilyApiKey").value,
+    git_approval_mode: $("gitApprovalMode").checked,
+    smart_skill_confirmation: $("smartSkillConfirmation").checked,
+    sandbox_mode: $("sandboxMode") ? $("sandboxMode").value : "auto",
+    sandbox_docker_image: $("sandboxDockerImage") ? $("sandboxDockerImage").value.trim() : "python:3.11-slim",
+  };
+  renderState(await api("/api/settings", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }));
+  await refreshModels();
+});
+
+// Apply Custom API
+$("applyCustomApi")?.addEventListener("click", async () => {
+  const url = $("modalCustomApiUrl")?.value?.trim() || "https://api.openai.com/v1";
+  const key = $("modalCustomApiKey")?.value?.trim() || "";
+  const model = $("modalCustomApiModel")?.value?.trim() || "gpt-4o-mini";
+
+  if ($("connMode")) $("connMode").value = "🔑 Custom API";
+  if ($("customApiUrl")) $("customApiUrl").value = url;
+  if ($("customApiModel")) $("customApiModel").value = model;
+  if ($("modelSelect")) $("modelSelect").value = model;
+
+  closeChooseModelModal();
+
+  const payload = {
+    conn_mode: "🔑 Custom API",
+    custom_api_url: url,
+    custom_api_model: model,
+    model: model,
+    temperature: Number($("temperature").value),
+    enable_thinking: $("thinking").checked,
+    auto_continue: $("autoContinue").checked,
+    memory_enabled: $("memoryEnabled").checked,
+    context_token_budget: Number($("contextTokenBudget").value),
+    response_token_budget: Number($("responseTokenBudget").value),
+    tavily_enabled: $("tavilyEnabled").checked,
+    tavily_api_key: $("tavilyApiKey").value,
+    git_approval_mode: $("gitApprovalMode").checked,
+    smart_skill_confirmation: $("smartSkillConfirmation").checked,
+    sandbox_mode: $("sandboxMode") ? $("sandboxMode").value : "auto",
+    sandbox_docker_image: $("sandboxDockerImage") ? $("sandboxDockerImage").value.trim() : "python:3.11-slim",
+  };
+  if (key) {
+    payload.custom_api_key = key;
+  }
+  renderState(await api("/api/settings", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }));
+  await refreshModels();
+});
+
+$("refreshModels")?.addEventListener("click", refreshModels);
+$("modelSelect")?.addEventListener("change", saveSettings);
+$("connMode")?.addEventListener("change", async () => {
+  const isCustom = $("connMode").value.includes("Custom");
+  if (isCustom) {
+    openChooseModelModal();
+  }
+  await saveSettings();
+  await refreshModels();
 });
 $("savePrompt").addEventListener("click", savePrompt);
 $("scanBtn").addEventListener("click", scanProject);
@@ -1865,6 +2047,112 @@ $("chatForm").addEventListener("submit", async (event) => {
   updateTokenUsage();
   await sendPrompt(prompt);
 });
+
+let embeddingPullPollTimer = null;
+
+async function checkEmbeddingModelStatus() {
+  try {
+    const status = await api("/api/ollama/embedding-status");
+    updateEmbeddingUI(status);
+    if (!status.installed && !status.dismissed && !status.is_pulling) {
+      showEmbeddingModal(status);
+    }
+  } catch (err) {
+    console.warn("Could not check embedding status:", err);
+  }
+}
+
+function updateEmbeddingUI(status) {
+  const modelEl = $("indexEmbeddingModel");
+  if (modelEl) {
+    modelEl.textContent = status.installed ? "embeddinggemma" : (status.active_model || "nomic-embed-text");
+    if (status.installed) {
+      modelEl.style.color = "var(--teal)";
+      modelEl.title = "Using Google embeddinggemma (768d dense vectors)";
+    }
+  }
+}
+
+function showEmbeddingModal(status) {
+  const modal = $("embeddingModal");
+  if (!modal) return;
+  modal.style.display = "flex";
+}
+
+function hideEmbeddingModal() {
+  const modal = $("embeddingModal");
+  if (!modal) return;
+  modal.style.display = "none";
+}
+
+async function dismissEmbeddingModal() {
+  hideEmbeddingModal();
+  try {
+    await api("/api/ollama/dismiss-embedding", { method: "POST", body: JSON.stringify({}) });
+  } catch (_) {}
+}
+
+async function startPullingEmbedding() {
+  const btnPull = $("btnPullEmbedding");
+  const btnDismiss = $("btnDismissEmbedding");
+  const progressWrap = $("embeddingPullProgressWrap");
+  const statusText = $("embeddingPullStatusText");
+  const statusPct = $("embeddingPullStatusPct");
+  const progressBar = $("embeddingPullProgressBar");
+
+  if (btnPull) btnPull.disabled = true;
+  if (btnDismiss) btnDismiss.disabled = true;
+  if (progressWrap) progressWrap.style.display = "block";
+
+  try {
+    await api("/api/ollama/pull-embedding", { method: "POST", body: JSON.stringify({}) });
+
+    if (embeddingPullPollTimer) clearInterval(embeddingPullPollTimer);
+    embeddingPullPollTimer = setInterval(async () => {
+      try {
+        const status = await api("/api/ollama/embedding-status");
+        if (status.progress_text && statusText) {
+          statusText.textContent = status.progress_text;
+          const match = status.progress_text.match(/(\d+)%/);
+          if (match && statusPct && progressBar) {
+            statusPct.textContent = `${match[1]}%`;
+            progressBar.style.width = `${match[1]}%`;
+          }
+        }
+        if (status.completed || status.installed) {
+          clearInterval(embeddingPullPollTimer);
+          embeddingPullPollTimer = null;
+          if (statusText) statusText.textContent = "مدل با موفقیت دانلود و آماده شد!";
+          if (progressBar) progressBar.style.width = "100%";
+          if (statusPct) statusPct.textContent = "100%";
+          updateEmbeddingUI(status);
+          setTimeout(() => {
+            hideEmbeddingModal();
+            if (btnPull) btnPull.disabled = false;
+            if (btnDismiss) btnDismiss.disabled = false;
+            api("/api/index/sync", { method: "POST", body: JSON.stringify({}) }).catch(() => {});
+          }, 1200);
+        } else if (status.error) {
+          clearInterval(embeddingPullPollTimer);
+          embeddingPullPollTimer = null;
+          if (statusText) statusText.textContent = `خطا در دانلود: ${status.error}`;
+          if (btnPull) btnPull.disabled = false;
+          if (btnDismiss) btnDismiss.disabled = false;
+        }
+      } catch (err) {
+        console.error("Polling error:", err);
+      }
+    }, 1500);
+  } catch (err) {
+    if (statusText) statusText.textContent = `خطا در ارسال درخواست: ${err.message}`;
+    if (btnPull) btnPull.disabled = false;
+    if (btnDismiss) btnDismiss.disabled = false;
+  }
+}
+
+$("btnPullEmbedding")?.addEventListener("click", startPullingEmbedding);
+$("btnDismissEmbedding")?.addEventListener("click", dismissEmbeddingModal);
+
 
 function initPanelResizersAndToggles() {
   const layout = $("mainLayout") || document.querySelector(".layout");
@@ -2222,8 +2510,9 @@ function renderSchematicGraphData(data) {
 
   if (emptyEl) emptyEl.style.display = "none";
 
+  const folderNodes = rawNodes.filter((n) => n.type === "folder");
   const fileNodes = rawNodes.filter((n) => n.type === "file");
-  const symbolNodes = rawNodes.filter((n) => n.type !== "file");
+  const symbolNodes = rawNodes.filter((n) => n.type !== "file" && n.type !== "folder");
 
   const canvas = $("schematicCanvas");
   const width = canvas ? (canvas.clientWidth || 300) : 300;
@@ -2232,54 +2521,63 @@ function renderSchematicGraphData(data) {
   const nodeMap = new Map();
   const nodes = [];
 
-  const fileCount = Math.max(1, fileNodes.length);
-  const rx = Math.max(100, Math.min(width * 0.35, 240));
-  const ry = Math.max(60, Math.min(height * 0.3, 140));
+  const mainNodes = [...folderNodes, ...fileNodes];
+  const mainCount = Math.max(1, mainNodes.length);
+  const rx = Math.max(110, Math.min(width * 0.36, 260));
+  const ry = Math.max(65, Math.min(height * 0.31, 155));
   const cx = width / 2;
   const cy = height / 2;
 
-  fileNodes.forEach((fn, idx) => {
-    const angle = (idx / fileCount) * 2 * Math.PI - Math.PI / 2;
-    const fx = cx + rx * Math.cos(angle);
-    const fy = cy + ry * Math.sin(angle);
+  mainNodes.forEach((mn, idx) => {
+    const angle = (idx / mainCount) * 2 * Math.PI - Math.PI / 2;
+    const isFolder = mn.type === "folder";
+    const distMod = isFolder ? 0.88 : 1.0;
+    const fx = cx + rx * Math.cos(angle) * distMod;
+    const fy = cy + ry * Math.sin(angle) * distMod;
 
     const nodeObj = {
-      id: fn.id,
-      label: fn.label || fn.id,
-      full_path: fn.full_path || fn.id,
-      type: "file",
-      is_entry: !!fn.is_entry,
-      symbols_count: fn.symbols_count || 0,
-      docstring: fn.docstring || "",
+      id: mn.id,
+      label: mn.label || mn.id,
+      full_path: mn.full_path || mn.id,
+      type: mn.type,
+      is_entry: !!mn.is_entry,
+      symbols_count: mn.symbols_count || 0,
+      docstring: mn.docstring || "",
+      start_line: mn.start_line || 1,
+      end_line: mn.end_line || 1,
       x: fx,
       y: fy,
-      width: Math.max(70, Math.min(130, (fn.label || fn.id).length * 7 + 26)),
-      height: 26,
+      width: Math.max(70, Math.min(135, (mn.label || mn.id).length * 7 + (isFolder ? 30 : 26))),
+      height: isFolder ? 28 : 26,
     };
     nodes.push(nodeObj);
-    nodeMap.set(fn.id, nodeObj);
+    nodeMap.set(mn.id, nodeObj);
 
-    const fileSymbols = symbolNodes.filter((s) => s.file_path === fn.id);
-    const symCount = fileSymbols.length;
-    fileSymbols.forEach((sn, sIdx) => {
-      const sAngle = angle + ((sIdx + 1) / (symCount + 1) - 0.5) * 1.5;
-      const sDist = 45 + (sIdx % 2) * 15;
-      const sx = fx + sDist * Math.cos(sAngle);
-      const sy = fy + sDist * Math.sin(sAngle);
+    if (!isFolder) {
+      const fileSymbols = symbolNodes.filter((s) => s.file_path === mn.id);
+      const symCount = fileSymbols.length;
+      fileSymbols.forEach((sn, sIdx) => {
+        const sAngle = angle + ((sIdx + 1) / (symCount + 1) - 0.5) * 1.5;
+        const sDist = 45 + (sIdx % 2) * 15;
+        const sx = fx + sDist * Math.cos(sAngle);
+        const sy = fy + sDist * Math.sin(sAngle);
 
-      const symObj = {
-        id: sn.id,
-        label: sn.label,
-        file_path: sn.file_path,
-        type: sn.type || "function",
-        x: sx,
-        y: sy,
-        width: Math.max(50, Math.min(100, (sn.label || "").length * 6 + 18)),
-        height: 18,
-      };
-      nodes.push(symObj);
-      nodeMap.set(sn.id, symObj);
-    });
+        const symObj = {
+          id: sn.id,
+          label: sn.label,
+          file_path: sn.file_path,
+          type: sn.type || "function",
+          start_line: sn.start_line || 1,
+          end_line: sn.end_line || 1,
+          x: sx,
+          y: sy,
+          width: Math.max(50, Math.min(100, (sn.label || "").length * 6 + 18)),
+          height: 18,
+        };
+        nodes.push(symObj);
+        nodeMap.set(sn.id, symObj);
+      });
+    }
   });
 
   const edges = [];
@@ -2292,6 +2590,7 @@ function renderSchematicGraphData(data) {
         target: tgt,
         type: e.type || "imports",
         label: e.label || "",
+        symbol: e.symbol || "",
       });
     }
   });
@@ -2386,13 +2685,25 @@ function drawSchematicCanvas() {
       ctx.lineTo(tgt.x, tgt.y);
       ctx.stroke();
       ctx.setLineDash([]);
+    } else if (edge.type === "contains") {
+      ctx.strokeStyle = isConnectedToHover ? "rgba(56, 189, 248, 0.95)" : "rgba(56, 189, 248, 0.35)";
+      ctx.lineWidth = isConnectedToHover ? 2.2 : 1.2;
+      ctx.setLineDash([3, 4]);
+      ctx.lineTo(tgt.x, tgt.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
     } else {
       const dx = tgt.x - src.x;
       const dy = tgt.y - src.y;
       const cx = (src.x + tgt.x) / 2 - dy * 0.15;
       const cy = (src.y + tgt.y) / 2 + dx * 0.15;
 
-      ctx.strokeStyle = isConnectedToHover ? "rgba(59, 130, 246, 0.95)" : "rgba(59, 130, 246, 0.4)";
+      const isCall = edge.type === "calls";
+      const edgeColor = isCall
+        ? (isConnectedToHover ? "rgba(168, 85, 247, 0.95)" : "rgba(168, 85, 247, 0.5)")
+        : (isConnectedToHover ? "rgba(59, 130, 246, 0.95)" : "rgba(59, 130, 246, 0.5)");
+
+      ctx.strokeStyle = edgeColor;
       ctx.lineWidth = isConnectedToHover ? 2.5 : 1.4;
       ctx.quadraticCurveTo(cx, cy, tgt.x, tgt.y);
       ctx.stroke();
@@ -2412,20 +2723,25 @@ function drawSchematicCanvas() {
   // 2. Draw Nodes
   schematicGraphState.nodes.forEach((node) => {
     const isHovered = hovered === node;
+    const isFolder = node.type === "folder";
     const isFile = node.type === "file";
     const isFunc = node.type === "function";
     const isClass = node.type === "class";
 
-    const nw = node.width || (isFile ? 80 : 60);
-    const nh = node.height || (isFile ? 26 : 18);
+    const nw = node.width || (isFolder ? 85 : isFile ? 80 : 60);
+    const nh = node.height || (isFolder ? 28 : isFile ? 26 : 18);
     const nx = node.x - nw / 2;
     const ny = node.y - nh / 2;
-    const r = isFile ? 6 : 9;
+    const r = isFolder ? 8 : isFile ? 6 : 9;
 
     ctx.beginPath();
     ctx.roundRect(nx, ny, nw, nh, r);
 
-    if (isFile) {
+    if (isFolder) {
+      ctx.fillStyle = isHovered ? "#0c2b3e" : "#081b29";
+      ctx.strokeStyle = isHovered ? "#38bdf8" : "#0284c7";
+      ctx.lineWidth = isHovered ? 2.2 : 1.4;
+    } else if (isFile) {
       if (node.is_entry) {
         ctx.fillStyle = isHovered ? "#3b1720" : "#241419";
         ctx.strokeStyle = isHovered ? "#f43f5e" : "#e11d48";
@@ -2448,17 +2764,91 @@ function drawSchematicCanvas() {
     ctx.stroke();
 
     ctx.fillStyle = isHovered ? "#ffffff" : "#e2e8f0";
-    ctx.font = isFile ? "bold 10.5px Inter, sans-serif" : "9px JetBrains Mono, monospace";
+    ctx.font = isFolder ? "bold 11px Inter, sans-serif" : isFile ? "bold 10.5px Inter, sans-serif" : "9px JetBrains Mono, monospace";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
 
-    let label = node.label || node.id;
-    if (label.length > 14) label = label.slice(0, 12) + "…";
-    ctx.fillText(label, node.x, node.y + (isFile ? 0 : 0.5));
+    let label = isFolder ? `📁 ${node.label}` : (node.label || node.id);
+    if (label.length > 15) label = label.slice(0, 13) + "…";
+    ctx.fillText(label, node.x, node.y + (isFolder || isFile ? 0 : 0.5));
   });
 
   ctx.restore();
   ctx.restore();
+}
+
+function scrollEditorToLine(lineNumber = 1, targetSymbol = "") {
+  const editor = $("codeEditor");
+  if (!editor || !editor.value) return;
+
+  const lines = editor.value.split("\n");
+  let targetLineIdx = Math.max(0, Math.min(lines.length - 1, lineNumber - 1));
+
+  if (targetSymbol) {
+    if (!lines[targetLineIdx].includes(targetSymbol)) {
+      const foundIdx = lines.findIndex((l) =>
+        l.includes(`def ${targetSymbol}`) ||
+        l.includes(`class ${targetSymbol}`) ||
+        l.includes(`function ${targetSymbol}`) ||
+        l.includes(targetSymbol)
+      );
+      if (foundIdx !== -1) {
+        targetLineIdx = foundIdx;
+      }
+    }
+  }
+
+  let charStart = 0;
+  for (let i = 0; i < targetLineIdx; i++) {
+    charStart += lines[i].length + 1;
+  }
+  let charEnd = charStart + lines[targetLineIdx].length;
+
+  if (targetSymbol) {
+    const symIdx = lines[targetLineIdx].indexOf(targetSymbol);
+    if (symIdx !== -1) {
+      charStart += symIdx;
+      charEnd = charStart + targetSymbol.length;
+    }
+  }
+
+  editor.focus();
+  try {
+    editor.setSelectionRange(charStart, charEnd);
+  } catch (_) {}
+
+  const totalLines = Math.max(1, lines.length);
+  const avgLineHeight = editor.scrollHeight / totalLines;
+  const targetScrollTop = Math.max(0, targetLineIdx * avgLineHeight - (editor.clientHeight / 2 - 40));
+
+  editor.scrollTop = targetScrollTop;
+  syncEditorHighlightScroll();
+}
+
+async function openNodeInEditor(node) {
+  if (!node) return;
+  if (node.type === "folder") {
+    showWorkbench();
+    setActiveActivity("Files");
+    activateTab("files");
+    return;
+  }
+  const filePath = node.type === "file" ? (node.full_path || node.id) : node.file_path;
+  if (!filePath) return;
+
+  const startLine = node.start_line || 1;
+  const symbol = node.type !== "file" ? node.label : "";
+
+  showWorkbench();
+  setActiveActivity("Files");
+  showEditorView("code");
+  activateTab("files");
+
+  await loadFile(filePath);
+
+  setTimeout(() => {
+    scrollEditorToLine(startLine, symbol);
+  }, 100);
 }
 
 function initSchematicArchitectureGraph() {
@@ -2470,6 +2860,33 @@ function initSchematicArchitectureGraph() {
   const refreshBtn = $("refreshSchematicGraph");
 
   if (!container || !canvas || !box) return;
+
+  function getGraphCoords(e) {
+    const rect = canvas.getBoundingClientRect();
+    const clientX = e.clientX - rect.left;
+    const clientY = e.clientY - rect.top;
+    const { x, y, scale } = schematicGraphState.transform;
+    return {
+      gx: (clientX - x) / scale,
+      gy: (clientY - y) / scale,
+      screenX: e.clientX,
+      screenY: e.clientY,
+      localX: clientX,
+      localY: clientY,
+    };
+  }
+
+  function findNodeAt(gx, gy) {
+    for (let i = schematicGraphState.nodes.length - 1; i >= 0; i--) {
+      const n = schematicGraphState.nodes[i];
+      const nw = (n.width || 60) / 2;
+      const nh = (n.height || 20) / 2;
+      if (gx >= n.x - nw && gx <= n.x + nw && gy >= n.y - nh && gy <= n.y + nh) {
+        return n;
+      }
+    }
+    return null;
+  }
 
   const ro = new ResizeObserver(() => {
     drawSchematicCanvas();
@@ -2502,9 +2919,16 @@ function initSchematicArchitectureGraph() {
     }, 50);
   }
 
-  // Double click anywhere on the graph box toggles fullscreen
+  // Double click handler: node -> navigate directly to function in editor; canvas background -> fullscreen
   box.addEventListener("dblclick", (e) => {
     if (e.target.closest("button")) return;
+    const { gx, gy } = getGraphCoords(e);
+    const hitNode = findNodeAt(gx, gy);
+    if (hitNode) {
+      openNodeInEditor(hitNode);
+      e.stopPropagation();
+      return;
+    }
     toggleFullscreen();
   });
 
@@ -2527,33 +2951,6 @@ function initSchematicArchitectureGraph() {
       toggleFullscreen();
     }
   });
-
-  function getGraphCoords(e) {
-    const rect = canvas.getBoundingClientRect();
-    const clientX = e.clientX - rect.left;
-    const clientY = e.clientY - rect.top;
-    const { x, y, scale } = schematicGraphState.transform;
-    return {
-      gx: (clientX - x) / scale,
-      gy: (clientY - y) / scale,
-      screenX: e.clientX,
-      screenY: e.clientY,
-      localX: clientX,
-      localY: clientY,
-    };
-  }
-
-  function findNodeAt(gx, gy) {
-    for (let i = schematicGraphState.nodes.length - 1; i >= 0; i--) {
-      const n = schematicGraphState.nodes[i];
-      const nw = (n.width || 60) / 2;
-      const nh = (n.height || 20) / 2;
-      if (gx >= n.x - nw && gx <= n.x + nw && gy >= n.y - nh && gy <= n.y + nh) {
-        return n;
-      }
-    }
-    return null;
-  }
 
   container.addEventListener("mousedown", (e) => {
     if (e.button !== 0) return;
@@ -2593,12 +2990,15 @@ function initSchematicArchitectureGraph() {
 
       if (hitNode && tooltip) {
         let text = `<strong>${escapeHtml(hitNode.label)}</strong> (${hitNode.type})`;
-        if (hitNode.type === "file") {
+        if (hitNode.type === "folder") {
+          text = `<strong>📁 ${escapeHtml(hitNode.label)}</strong> (Folder)<br><span style="color:var(--muted)">Path: ${escapeHtml(hitNode.full_path || "")}</span>`;
+        } else if (hitNode.type === "file") {
           text += `<br><span style="color:var(--muted)">Symbols: ${hitNode.symbols_count}</span>`;
           if (hitNode.is_entry) text += `<br><span style="color:var(--danger)">★ Entry Point</span>`;
           if (hitNode.docstring) text += `<br><span style="font-size:9.5px;color:var(--text-dim)">${escapeHtml(hitNode.docstring.slice(0, 100))}</span>`;
         } else {
           text += `<br><span style="color:var(--muted)">In: ${escapeHtml(hitNode.file_path || "")}</span>`;
+          if (hitNode.start_line) text += `<br><span style="color:var(--text-dim)">Line: ${hitNode.start_line}</span>`;
         }
         tooltip.innerHTML = text;
         tooltip.style.left = `${Math.min(localX + 12, container.clientWidth - 180)}px`;
@@ -2631,21 +3031,347 @@ function initSchematicArchitectureGraph() {
   container.addEventListener("click", (e) => {
     const { gx, gy } = getGraphCoords(e);
     const hitNode = findNodeAt(gx, gy);
-    if (hitNode && (hitNode.type === "file" || hitNode.file_path)) {
-      const targetPath = hitNode.type === "file" ? hitNode.full_path : hitNode.file_path;
-      if (targetPath) loadFile(targetPath);
+    if (hitNode) {
+      openNodeInEditor(hitNode);
     }
   });
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ── Real Integrated xterm.js Terminal Controller (VS Code Engine)
+// ══════════════════════════════════════════════════════════════════════════════
+const terminalState = {
+  sessionId: "default",
+  shellType: "powershell",
+  isOpen: true,
+  isMaximized: false,
+  xterm: null,
+  fitAddon: null,
+  webLinksAddon: null,
+  socket: null,
+};
+
+function initXtermTerminal() {
+  const container = $("xtermContainer");
+  if (!container) return;
+
+  if (typeof Terminal === "undefined") {
+    console.error("xterm.js is not loaded yet.");
+    return;
+  }
+
+  if (terminalState.xterm) {
+    try { terminalState.xterm.dispose(); } catch (_) {}
+    terminalState.xterm = null;
+  }
+
+  // Create real xterm.js instance with VS Code theme
+  terminalState.xterm = new Terminal({
+    cursorBlink: true,
+    cursorStyle: "block",
+    fontSize: 13,
+    fontFamily: 'Consolas, "Cascadia Code", "Courier New", monospace',
+    lineHeight: 1.25,
+    scrollback: 5000,
+    theme: {
+      background: "#181818",
+      foreground: "#cccccc",
+      cursor: "#aeafad",
+      cursorAccent: "#181818",
+      selectionBackground: "#264f78",
+      black: "#000000",
+      red: "#cd3131",
+      green: "#0dbc79",
+      yellow: "#e5e510",
+      blue: "#2472c8",
+      magenta: "#bc3fbc",
+      cyan: "#11a8cd",
+      white: "#e5e5e5",
+      brightBlack: "#666666",
+      brightRed: "#f14c4c",
+      brightGreen: "#23d18b",
+      brightYellow: "#f5f543",
+      brightBlue: "#3b8eea",
+      brightMagenta: "#d670d6",
+      brightCyan: "#29b8db",
+      brightWhite: "#e5e5e5",
+    },
+  });
+
+  if (typeof FitAddon !== "undefined" && FitAddon.FitAddon) {
+    terminalState.fitAddon = new FitAddon.FitAddon();
+    terminalState.xterm.loadAddon(terminalState.fitAddon);
+  }
+
+  if (typeof WebLinksAddon !== "undefined" && WebLinksAddon.WebLinksAddon) {
+    terminalState.webLinksAddon = new WebLinksAddon.WebLinksAddon();
+    terminalState.xterm.loadAddon(terminalState.webLinksAddon);
+  }
+
+  terminalState.xterm.open(container);
+
+  // Send keystrokes directly over WebSocket
+  terminalState.xterm.onData((data) => {
+    if (terminalState.socket && terminalState.socket.readyState === WebSocket.OPEN) {
+      terminalState.socket.send(JSON.stringify({ type: "input", data: data }));
+    }
+  });
+
+  // Connect WebSocket backend
+  connectTerminalWebSocket();
+
+  // Resize handler using FitAddon
+  const triggerFit = () => {
+    if (terminalState.fitAddon && terminalState.xterm && container.clientHeight > 0) {
+      try {
+        terminalState.fitAddon.fit();
+        if (terminalState.socket && terminalState.socket.readyState === WebSocket.OPEN) {
+          terminalState.socket.send(JSON.stringify({
+            type: "resize",
+            cols: terminalState.xterm.cols,
+            rows: terminalState.xterm.rows,
+          }));
+        }
+      } catch (_) {}
+    }
+  };
+
+  setTimeout(triggerFit, 100);
+  window.addEventListener("resize", triggerFit);
+
+  if (window.ResizeObserver) {
+    const ro = new ResizeObserver(triggerFit);
+    ro.observe(container);
+  }
+}
+
+function connectTerminalWebSocket() {
+  if (terminalState.socket) {
+    try { terminalState.socket.close(); } catch (_) {}
+    terminalState.socket = null;
+  }
+
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const wsUrl = `${protocol}//${window.location.host}/api/terminal/ws?session_id=${terminalState.sessionId}&shell=${encodeURIComponent(terminalState.shellType)}`;
+
+  terminalState.socket = new WebSocket(wsUrl);
+
+  terminalState.socket.onopen = () => {
+    if (terminalState.fitAddon && terminalState.xterm) {
+      try {
+        terminalState.fitAddon.fit();
+        terminalState.socket.send(JSON.stringify({
+          type: "resize",
+          cols: terminalState.xterm.cols,
+          rows: terminalState.xterm.rows,
+        }));
+      } catch (_) {}
+    }
+  };
+
+  terminalState.socket.onmessage = (event) => {
+    if (terminalState.xterm) {
+      terminalState.xterm.write(event.data);
+    }
+  };
+
+  terminalState.socket.onerror = (err) => {
+    console.warn("Terminal WebSocket error:", err);
+  };
+
+  terminalState.socket.onclose = () => {
+    setTimeout(() => {
+      if (terminalState.isOpen && (!terminalState.socket || terminalState.socket.readyState === WebSocket.CLOSED)) {
+        connectTerminalWebSocket();
+      }
+    }, 3000);
+  };
+}
+
+function toggleTerminal(force) {
+  const panel = $("terminalPanel");
+  const splitter = $("terminalSplitter");
+  const toggleBtn = $("toggleTerminalBtn");
+  if (!panel || !splitter) return;
+
+  const shouldOpen = force !== undefined ? force : panel.classList.contains("collapsed");
+  terminalState.isOpen = shouldOpen;
+
+  if (shouldOpen) {
+    panel.classList.remove("collapsed");
+    splitter.classList.remove("collapsed");
+    if (toggleBtn) toggleBtn.classList.add("active");
+    if (terminalState.fitAddon) {
+      setTimeout(() => {
+        try {
+          terminalState.fitAddon.fit();
+          terminalState.xterm?.focus();
+        } catch (_) {}
+      }, 50);
+    }
+  } else {
+    panel.classList.add("collapsed");
+    splitter.classList.add("collapsed");
+    if (toggleBtn) toggleBtn.classList.remove("active");
+  }
+}
+
+function initIntegratedTerminal() {
+  const panel = $("terminalPanel");
+  const splitter = $("terminalSplitter");
+  const shellSelect = $("terminalShellSelect");
+  const toggleBtn = $("toggleTerminalBtn");
+  const clearBtn = $("terminalClearBtn");
+  const killBtn = $("terminalKillBtn");
+  const maxBtn = $("terminalMaximizeBtn");
+  const closeBtn = $("terminalCloseBtn");
+
+  if (!panel || !splitter) return;
+
+  // Toggle button in topbar
+  if (toggleBtn) {
+    toggleBtn.addEventListener("click", () => toggleTerminal());
+  }
+
+  // Shell selector
+  if (shellSelect) {
+    shellSelect.addEventListener("change", (e) => {
+      terminalState.shellType = e.target.value;
+      if (terminalState.socket && terminalState.socket.readyState === WebSocket.OPEN) {
+        terminalState.socket.send(JSON.stringify({ type: "restart", shell: terminalState.shellType }));
+      } else {
+        connectTerminalWebSocket();
+      }
+    });
+  }
+
+  // Clear button (Ctrl+L)
+  if (clearBtn) {
+    clearBtn.addEventListener("click", () => {
+      if (terminalState.xterm) {
+        terminalState.xterm.clear();
+        terminalState.xterm.focus();
+      }
+    });
+  }
+
+  // Kill button (Ctrl+C / 0x03)
+  if (killBtn) {
+    killBtn.addEventListener("click", () => {
+      if (terminalState.socket && terminalState.socket.readyState === WebSocket.OPEN) {
+        terminalState.socket.send(JSON.stringify({ type: "kill" }));
+        terminalState.socket.send(JSON.stringify({ type: "input", data: "\x03" }));
+      }
+    });
+  }
+
+  // Maximize / Restore button
+  if (maxBtn) {
+    maxBtn.addEventListener("click", () => {
+      terminalState.isMaximized = !terminalState.isMaximized;
+      panel.classList.toggle("maximized", terminalState.isMaximized);
+      if (terminalState.fitAddon) {
+        setTimeout(() => {
+          try { terminalState.fitAddon.fit(); } catch (_) {}
+        }, 60);
+      }
+    });
+  }
+
+  // Close button
+  if (closeBtn) closeBtn.addEventListener("click", () => toggleTerminal(false));
+
+  // Global shortcut: Ctrl+` (backtick) toggles terminal
+  window.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && (e.key === "`" || e.key === "~")) {
+      e.preventDefault();
+      toggleTerminal();
+    }
+  });
+
+  // Vertical pointer-based splitter drag for terminal height
+  splitter.addEventListener("dblclick", (e) => {
+    e.preventDefault();
+    terminalState.isMaximized = !terminalState.isMaximized;
+    panel.classList.toggle("maximized", terminalState.isMaximized);
+    if (terminalState.fitAddon) {
+      setTimeout(() => {
+        try { terminalState.fitAddon.fit(); } catch (_) {}
+      }, 60);
+    }
+  });
+
+  let isDraggingSplitter = false;
+  let startY = 0;
+  let startHeight = 220;
+
+  const onPointerMove = (e) => {
+    if (!isDraggingSplitter) return;
+    const deltaY = startY - e.clientY; // dragging up increases terminal height
+    const containerHeight = panel.parentElement ? panel.parentElement.getBoundingClientRect().height : window.innerHeight;
+    const minHeight = 60;
+    const maxHeight = Math.max(minHeight, containerHeight - 80);
+    const newHeight = Math.max(minHeight, Math.min(maxHeight, startHeight + deltaY));
+    panel.style.setProperty("--terminal-height", `${newHeight}px`);
+    panel.style.height = `${newHeight}px`;
+    terminalState.isMaximized = false;
+    panel.classList.remove("maximized");
+    if (terminalState.fitAddon) {
+      try { terminalState.fitAddon.fit(); } catch (_) {}
+    }
+  };
+
+  const onPointerUp = (e) => {
+    if (isDraggingSplitter) {
+      isDraggingSplitter = false;
+      splitter.classList.remove("is-dragging");
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      try {
+        if (splitter.hasPointerCapture && splitter.hasPointerCapture(e.pointerId)) {
+          splitter.releasePointerCapture(e.pointerId);
+        }
+      } catch (_) {}
+      if (terminalState.fitAddon) {
+        try { terminalState.fitAddon.fit(); } catch (_) {}
+      }
+    }
+  };
+
+  splitter.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    isDraggingSplitter = true;
+    startY = e.clientY;
+    const rect = panel.getBoundingClientRect();
+    startHeight = rect.height > 0 ? rect.height : 220;
+    splitter.classList.add("is-dragging");
+    document.body.style.cursor = "row-resize";
+    document.body.style.userSelect = "none";
+    try {
+      splitter.setPointerCapture(e.pointerId);
+    } catch (_) {}
+    e.preventDefault();
+  });
+
+  splitter.addEventListener("pointermove", onPointerMove);
+  splitter.addEventListener("pointerup", onPointerUp);
+  splitter.addEventListener("pointercancel", onPointerUp);
+  window.addEventListener("pointerup", onPointerUp);
+
+  // Initialize xterm instance
+  initXtermTerminal();
 }
 
 initPanelResizersAndToggles();
 setupSkillSlashAutocomplete();
 initSchematicArchitectureGraph();
+initIntegratedTerminal();
 installEditorMetricStyles();
 updateGitAuthPanel();
 refresh().catch((err) => {
   $("messages").innerHTML = `<article class="message assistant"><span class="role">error</span>${escapeHtml(err.message)}</article>`;
 }).then(() => {
+  checkEmbeddingModelStatus();
   if (!state.initialProjectsShown) {
     state.initialProjectsShown = true;
     setActiveActivity("Projects");

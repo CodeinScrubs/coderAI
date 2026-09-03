@@ -45,7 +45,8 @@ class LangChainRuntime:
             return False, repr(exc)
 
     def supports(self, conn_mode: str) -> bool:
-        return self.available and conn_mode in {MODE_LOCAL, MODE_CUSTOM}
+        mode_str = str(conn_mode).lower()
+        return self.available and ("local" in mode_str or "custom" in mode_str or conn_mode in {MODE_LOCAL, MODE_CUSTOM})
 
     def invoke(self, history: list[dict], tools: list[dict], settings: RuntimeSettings) -> dict:
         model = self._build_model(settings, streaming=False)
@@ -88,7 +89,8 @@ class LangChainRuntime:
         return normalized
 
     def _build_model(self, settings: RuntimeSettings, streaming: bool):
-        if settings.conn_mode == MODE_LOCAL:
+        mode_str = str(settings.conn_mode).lower()
+        if "local" in mode_str or settings.conn_mode == MODE_LOCAL:
             from langchain_ollama import ChatOllama
 
             kwargs = {
@@ -103,17 +105,21 @@ class LangChainRuntime:
                 kwargs["reasoning"] = True
             return ChatOllama(**kwargs)
 
-        if settings.conn_mode == MODE_CUSTOM:
+        if "custom" in mode_str or settings.conn_mode == MODE_CUSTOM:
             from langchain_openai import ChatOpenAI
+
+            api_key = settings.custom_api_key or "not-needed"
+            base_url = settings.custom_api_url.rstrip("/") if settings.custom_api_url else "https://api.openai.com/v1"
 
             return ChatOpenAI(
                 model=settings.model,
-                base_url=settings.custom_api_url.rstrip("/"),
-                api_key=settings.custom_api_key or "not-needed",
+                base_url=base_url,
+                api_key=api_key,
                 temperature=settings.temperature,
                 max_tokens=settings.response_token_budget,
                 streaming=streaming,
                 timeout=settings.request_timeout,
+                default_headers={"User-Agent": "CoderAI/1.0"},
             )
 
         raise ValueError(f"Unsupported connection mode for LangChain: {settings.conn_mode}")

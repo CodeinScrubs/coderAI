@@ -1,0 +1,32 @@
+{
+  "name": "code-craftsmanship",
+  "version": "1.8.0",
+  "description": "Code quality and software design skills including Clean Code (Robert C. Martin), Refactoring patterns (Martin Fowler), A Philosophy of Software Design (John Ousterhout), The Pragmatic Programmer (Hunt & Thomas), Domain-Driven Design (Eric Evans), Working Effectively with Legacy Code (Michael Feathers), and Google's Developer Documentation Style Guide (technical-documentation)",
+  "license": "MIT",
+  "keywords": [
+    "clean-code",
+    "refactoring",
+    "code-quality",
+    "software-design",
+    "ddd",
+    "domain-driven-design",
+    "pragmatic",
+    "legacy-code",
+    "characterization-tests",
+    "seams",
+    "code-review",
+    "code-smells",
+    "technical-debt",
+    "over-engineered",
+    "untested-code",
+    "documentation",
+    "technical-writing",
+    "style-guide",
+    "readme",
+    "api-reference",
+    "release-notes"
+  ],
+  "repository": "https://github.com/wondelai/skills",
+  "homepage": "https://github.com/wondelai/skills",
+  "skills": "./skills/"
+}
