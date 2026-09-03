@@ -4,7 +4,9 @@ Ollama Agentic Workspace is a local-first agentic coding environment for working
 
 The app is built as a small Python HTTP server with a custom HTML/CSS/JavaScript frontend.
 
-![Ollama Agentic Workspace Overview](assets/workspace_overview.png)
+<p align="center">
+  <img src="https://raw.githubusercontent.com/mohamadreza1368/coderAI/main/assets/workspace_overview.png" alt="Ollama Agentic Workspace Overview" width="100%">
+</p>
 
 ## Download The App
 
