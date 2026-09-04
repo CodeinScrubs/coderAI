@@ -306,6 +306,9 @@ function renderState(data) {
   $("responseTokenBudget").value = data.settings.response_token_budget || 8192;
   $("tavilyEnabled").checked = !!data.settings.tavily_enabled;
   $("gitApprovalMode").checked = data.settings.git_approval_mode !== false;
+  if (data.settings.policies) {
+    renderApprovalPolicies(data.settings.policies);
+  }
   $("smartSkillConfirmation").checked = !!data.settings.smart_skill_confirmation;
   $("tavilyApiKey").value = "";
   updateTavilyPanel(data.settings);
@@ -738,16 +741,31 @@ function renderGit(git) {
   const notice = $("gitRepoNotice");
   const status = $("gitStatusFiles");
   const history = $("gitHistoryList");
+  const toolbar = $("gitToolbar");
+  const conflictPanel = $("gitConflictPanel");
+
   if (!git.is_repo) {
+    if (toolbar) toolbar.style.display = "none";
+    if (conflictPanel) conflictPanel.style.display = "none";
     notice.innerHTML = `<span>This workspace is not a Git repository.</span><button id="initGitRepo" type="button" class="primary">Initialize Git</button>`;
     status.innerHTML = "";
     history.innerHTML = "";
     $("initGitRepo").addEventListener("click", initGitRepo);
     $("pushGitChanges").disabled = true;
+    if ($("gitFetchBtn")) $("gitFetchBtn").disabled = true;
+    if ($("gitPullBtn")) $("gitPullBtn").disabled = true;
     return;
   }
+
+  if (toolbar) toolbar.style.display = "flex";
   if (git.remote) $("gitRemoteUrl").value = git.remote;
   $("pushGitChanges").disabled = !git.remote;
+  if ($("gitFetchBtn")) $("gitFetchBtn").disabled = !git.remote;
+  if ($("gitPullBtn")) $("gitPullBtn").disabled = !git.remote;
+
+  renderGitBranches(git);
+  renderGitConflicts(git);
+
   notice.innerHTML = `<span>Branch: <code>${escapeHtml(git.branch || "HEAD")}</code>${git.clean ? " · clean" : " · uncommitted changes"}</span>`;
   status.textContent = (git.files || []).map((file) => `${file.status}  ${file.path}`).join("\n");
   history.innerHTML = (git.history || []).map((commit) => `
@@ -760,6 +778,261 @@ function renderGit(git) {
   document.querySelectorAll(".git-revert").forEach((button) => {
     button.addEventListener("click", () => revertGitCommit(button.dataset.hash));
   });
+}
+
+function renderGitBranches(git) {
+  const select = $("gitBranchSelect");
+  if (!select) return;
+  const currentBranch = git.branch || git.branches?.current || "HEAD";
+  const local = git.branches?.local || [currentBranch];
+  const remote = git.branches?.remote || [];
+
+  let optionsHtml = local.map((b) => `<option value="${escapeHtml(b)}"${b === currentBranch ? " selected" : ""}>${escapeHtml(b)}</option>`).join("");
+  if (remote.length > 0) {
+    optionsHtml += `<optgroup label="Remote Branches">` +
+      remote.map((b) => `<option value="${escapeHtml(b)}">${escapeHtml(b)}</option>`).join("") +
+      `</optgroup>`;
+  }
+  select.innerHTML = optionsHtml;
+
+  const badge = $("gitSyncBadge");
+  if (badge) {
+    const ahead = git.branches?.ahead ?? git.ahead ?? 0;
+    const behind = git.branches?.behind ?? git.behind ?? 0;
+    if (ahead > 0 || behind > 0) {
+      badge.textContent = `↑ ${ahead} · ↓ ${behind}`;
+      badge.title = `${ahead} commit(s) ahead, ${behind} commit(s) behind remote`;
+      badge.style.display = "inline-block";
+    } else if (git.remote) {
+      badge.textContent = "✓ Synced";
+      badge.title = "Up to date with remote";
+      badge.style.display = "inline-block";
+    } else {
+      badge.style.display = "none";
+    }
+  }
+}
+
+function renderGitConflicts(git) {
+  const panel = $("gitConflictPanel");
+  if (!panel) return;
+  const inMerge = Boolean(git.in_merge);
+  const conflicts = git.conflicts || [];
+
+  if (!inMerge) {
+    panel.style.display = "none";
+    return;
+  }
+
+  panel.style.display = "grid";
+  const summaryBadge = $("conflictSummaryBadge");
+  if (summaryBadge) {
+    summaryBadge.textContent = `${conflicts.length} unmerged file${conflicts.length === 1 ? "" : "s"}`;
+  }
+
+  const completeBtn = $("gitCompleteMergeBtn");
+  if (completeBtn) {
+    completeBtn.disabled = conflicts.length > 0;
+  }
+
+  const list = $("gitConflictList");
+  if (!list) return;
+
+  if (conflicts.length === 0) {
+    list.innerHTML = `<div style="padding:8px 12px;background:rgba(16,185,129,0.1);border:1px solid rgba(16,185,129,0.3);border-radius:6px;color:#34d399;font-size:12px;">All conflicts resolved! Click <strong>Complete Merge</strong> above to finalize the merge commit.</div>`;
+    return;
+  }
+
+  list.innerHTML = conflicts.map((c) => {
+    const hunks = c.hunks || [];
+    const hunksHtml = hunks.map((h, i) => `
+      <div class="conflict-hunk-box">
+        <div class="conflict-hunk-header ours">
+          <span>Ours: ${escapeHtml(h.ours_label || "Current HEAD")}</span>
+          <span>Hunk #${i + 1}</span>
+        </div>
+        <pre class="conflict-hunk-content">${escapeHtml(h.ours || "(empty)")}</pre>
+        <div class="conflict-hunk-header theirs">
+          <span>Theirs: ${escapeHtml(h.theirs_label || "Incoming change")}</span>
+        </div>
+        <pre class="conflict-hunk-content">${escapeHtml(h.theirs || "(empty)")}</pre>
+      </div>
+    `).join("");
+
+    return `
+      <div class="conflict-card" data-path="${escapeHtml(c.path)}">
+        <div class="conflict-card-head">
+          <div class="conflict-file-path">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/></svg>
+            ${escapeHtml(c.path)}
+            <span class="conflict-hunks-summary">(${c.count || hunks.length} conflict hunk${(c.count || hunks.length) === 1 ? "" : "s"})</span>
+          </div>
+          <div class="conflict-card-actions">
+            <button type="button" class="ghost small-btn conflict-btn-ours" data-path="${escapeHtml(c.path)}" title="Keep our current changes">Accept Ours</button>
+            <button type="button" class="ghost small-btn conflict-btn-theirs" data-path="${escapeHtml(c.path)}" title="Accept incoming remote changes">Accept Theirs</button>
+            <button type="button" class="ghost small-btn conflict-btn-edit" data-path="${escapeHtml(c.path)}" title="Open file in editor to resolve manually">Edit in Editor</button>
+            <button type="button" class="primary small-btn conflict-btn-resolved" data-path="${escapeHtml(c.path)}" title="Mark as resolved (git add)">Mark Resolved</button>
+          </div>
+        </div>
+        ${hunksHtml}
+      </div>
+    `;
+  }).join("");
+
+  list.querySelectorAll(".conflict-btn-ours").forEach((btn) => {
+    btn.addEventListener("click", () => resolveGitConflict(btn.dataset.path, "ours"));
+  });
+  list.querySelectorAll(".conflict-btn-theirs").forEach((btn) => {
+    btn.addEventListener("click", () => resolveGitConflict(btn.dataset.path, "theirs"));
+  });
+  list.querySelectorAll(".conflict-btn-edit").forEach((btn) => {
+    btn.addEventListener("click", () => openConflictInEditor(btn.dataset.path));
+  });
+  list.querySelectorAll(".conflict-btn-resolved").forEach((btn) => {
+    btn.addEventListener("click", () => resolveGitConflict(btn.dataset.path, "mark_resolved"));
+  });
+}
+
+async function switchGitBranch(branchName) {
+  if (!branchName) return;
+  setLoading(true, `Switching to branch ${branchName}...`);
+  try {
+    const res = await api("/api/git/branch/switch", { method: "POST", body: JSON.stringify({ name: branchName }) });
+    state.data.git = res.git;
+    renderGit(res.git);
+    await refresh();
+  } catch (err) {
+    alert(`Failed to switch branch: ${err.message}`);
+    if (state.data.git) renderGit(state.data.git);
+  } finally {
+    setLoading(false);
+  }
+}
+
+function openNewBranchModal() {
+  $("newBranchNameInput").value = "";
+  $("newBranchStartPointInput").value = "";
+  $("newBranchModal").style.display = "grid";
+  $("newBranchNameInput").focus();
+}
+
+function closeNewBranchModal() {
+  $("newBranchModal").style.display = "none";
+}
+
+async function submitNewBranch() {
+  const name = $("newBranchNameInput").value.trim();
+  if (!name) {
+    $("newBranchNameInput").focus();
+    return;
+  }
+  const startPoint = $("newBranchStartPointInput").value.trim();
+  closeNewBranchModal();
+  setLoading(true, `Creating branch ${name}...`);
+  try {
+    const res = await api("/api/git/branch/create", {
+      method: "POST",
+      body: JSON.stringify({ name, start_point: startPoint }),
+    });
+    state.data.git = res.git;
+    renderGit(res.git);
+    await refresh();
+  } catch (err) {
+    alert(`Failed to create branch: ${err.message}`);
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function fetchGitRepo() {
+  setLoading(true, "Fetching from remote...");
+  try {
+    const res = await api("/api/git/fetch", {
+      method: "POST",
+      body: JSON.stringify({ ...gitCredentials() }),
+    });
+    state.data.git = res.git;
+    renderGit(res.git);
+  } catch (err) {
+    alert(`Fetch failed: ${err.message}`);
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function pullGitRepo() {
+  setLoading(true, "Pulling from remote...");
+  try {
+    const res = await api("/api/git/pull", {
+      method: "POST",
+      body: JSON.stringify({ ...gitCredentials() }),
+    });
+    state.data.git = res.git;
+    renderGit(res.git);
+    await refresh();
+    if (res.conflict) {
+      alert("Merge conflict detected! Please use the Merge Conflict Assistant to resolve conflicts.");
+    }
+  } catch (err) {
+    alert(`Pull failed: ${err.message}`);
+    await refresh();
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function resolveGitConflict(filePath, resolution) {
+  setLoading(true, `Resolving ${filePath} (${resolution})...`);
+  try {
+    const res = await api("/api/git/conflicts/resolve", {
+      method: "POST",
+      body: JSON.stringify({ path: filePath, resolution }),
+    });
+    state.data.git = res.git;
+    renderGit(res.git);
+    await refresh();
+  } catch (err) {
+    alert(`Failed to resolve conflict: ${err.message}`);
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function openConflictInEditor(filePath) {
+  showEditorView("code");
+  await loadFile(filePath);
+}
+
+async function abortGitMerge() {
+  if (!window.confirm("Are you sure you want to abort the current merge? All unresolved changes will be reset.")) return;
+  setLoading(true, "Aborting merge...");
+  try {
+    const res = await api("/api/git/merge/abort", { method: "POST", body: JSON.stringify({}) });
+    state.data.git = res.git;
+    renderGit(res.git);
+    await refresh();
+  } catch (err) {
+    alert(`Failed to abort merge: ${err.message}`);
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function completeGitMerge() {
+  const message = window.prompt("Merge commit message:", "Merge resolved conflicts");
+  if (message === null) return;
+  setLoading(true, "Completing merge commit...");
+  try {
+    const res = await api("/api/git/merge/complete", { method: "POST", body: JSON.stringify({ message }) });
+    state.data.git = res.git;
+    renderGit(res.git);
+    await refresh();
+    alert(`Merge completed! Commit: ${res.commit ? res.commit.slice(0, 8) : "done"}`);
+  } catch (err) {
+    alert(`Failed to complete merge: ${err.message}`);
+  } finally {
+    setLoading(false);
+  }
 }
 
 function gitCredentials() {
@@ -890,6 +1163,15 @@ function showApproval(event, isGitDiff = false) {
   $("approvalTitle").textContent = isGitDiff ? "Review File Change" : "Execution Approval Required";
   $("approvalToolName").textContent = event.name || "tool";
   $("approvalWorkspace").textContent = state.data?.workspace?.path || "";
+  const policyRow = $("approvalPolicyRow");
+  if (policyRow) {
+    if (event.reason) {
+      policyRow.style.display = "flex";
+      $("approvalPolicyReason").textContent = event.reason;
+    } else {
+      policyRow.style.display = "none";
+    }
+  }
   $("approvalPreviewLabel").textContent = isGitDiff ? "Proposed file diff" : "Command / Code preview";
   $("approvalPreview").classList.toggle("diff-preview", isGitDiff);
   if (isGitDiff) $("approvalPreview").innerHTML = renderDiffPreview(event.preview);
@@ -928,6 +1210,163 @@ async function resolveApproval(approved) {
   });
   $("approvalModal").style.display = "none";
   state.pendingApprovalType = null;
+}
+
+// --- Approval Policies Management ---
+state.policyScope = "workspace"; // "workspace" or "global"
+state.policiesData = null;
+
+function renderApprovalPolicies(policiesData) {
+  if (!policiesData) return;
+  state.policiesData = policiesData;
+
+  const wsName = $("policyWorkspaceName");
+  if (wsName) {
+    const wsPath = policiesData.workspace_path || state.data?.workspace?.path || "";
+    const parts = wsPath.split(/[\\/]/).filter(Boolean);
+    wsName.textContent = parts[parts.length - 1] || wsPath || "Current";
+    wsName.title = wsPath;
+  }
+
+  const isWorkspace = state.policyScope === "workspace";
+  const wsMode = policiesData.workspace?.mode || "inherit";
+  const inheritToggle = $("policyInheritToggle");
+  if (inheritToggle) {
+    inheritToggle.checked = wsMode === "inherit";
+  }
+
+  const wsBanner = $("policyWorkspaceBanner");
+  if (wsBanner) {
+    wsBanner.style.display = isWorkspace ? "flex" : "none";
+  }
+
+  const resetBtn = $("policyResetBtn");
+  if (resetBtn) {
+    resetBtn.style.display = (isWorkspace && wsMode === "custom") ? "inline-block" : "none";
+  }
+
+  const activePolicy = isWorkspace
+    ? (wsMode === "custom" ? (policiesData.workspace?.policy || {}) : policiesData.effective)
+    : policiesData.global;
+
+  const isInherited = isWorkspace && wsMode === "inherit";
+
+  const selects = {
+    policyWriteFileSelect: activePolicy?.write_file || "always",
+    policyRunBashSelect: activePolicy?.run_bash || "dangerous_only",
+    policyRunPythonSelect: activePolicy?.run_python || "always",
+    policyGitOpsSelect: activePolicy?.git_push || "always",
+  };
+
+  Object.entries(selects).forEach(([id, val]) => {
+    const el = $(id);
+    if (el) {
+      el.value = val;
+      el.disabled = isInherited;
+    }
+  });
+
+  // Keep legacy gitApprovalMode checkbox in sync
+  const gitApproval = $("gitApprovalMode");
+  if (gitApproval) {
+    gitApproval.checked = (selects.policyWriteFileSelect !== "auto");
+  }
+}
+
+async function saveCurrentPolicy() {
+  if (!state.policiesData) return;
+  const isWorkspace = state.policyScope === "workspace";
+  const inheritToggle = $("policyInheritToggle");
+  const mode = (inheritToggle && inheritToggle.checked) ? "inherit" : "custom";
+
+  const policy = {
+    write_file: $("policyWriteFileSelect").value,
+    replace_in_file: $("policyWriteFileSelect").value,
+    run_bash: $("policyRunBashSelect").value,
+    run_python: $("policyRunPythonSelect").value,
+    git_push: $("policyGitOpsSelect").value,
+    git_revert: $("policyGitOpsSelect").value,
+  };
+
+  const payload = {
+    scope: isWorkspace ? "workspace" : "global",
+    mode: mode,
+    policy: policy,
+    workspace_path: state.policiesData.workspace_path || state.data?.workspace?.path || "",
+  };
+
+  const statusEl = $("policyStatusMsg");
+  try {
+    if (statusEl) { statusEl.textContent = "Saving..."; statusEl.className = "policy-status"; }
+    const updated = await api("/api/policies", { method: "POST", body: JSON.stringify(payload) });
+    renderApprovalPolicies(updated);
+    if (statusEl) {
+      statusEl.textContent = "Policy saved ✓";
+      statusEl.className = "policy-status saved";
+      setTimeout(() => { if (statusEl) statusEl.textContent = ""; }, 2500);
+    }
+  } catch (err) {
+    if (statusEl) { statusEl.textContent = `Error: ${err.message}`; statusEl.className = "policy-status"; }
+  }
+}
+
+function initApprovalPoliciesUI() {
+  const wsBtn = $("policyScopeWorkspaceBtn");
+  const globalBtn = $("policyScopeGlobalBtn");
+
+  if (wsBtn && globalBtn) {
+    wsBtn.addEventListener("click", () => {
+      state.policyScope = "workspace";
+      wsBtn.classList.add("active");
+      globalBtn.classList.remove("active");
+      if (state.policiesData) renderApprovalPolicies(state.policiesData);
+    });
+
+    globalBtn.addEventListener("click", () => {
+      state.policyScope = "global";
+      globalBtn.classList.add("active");
+      wsBtn.classList.remove("active");
+      if (state.policiesData) renderApprovalPolicies(state.policiesData);
+    });
+  }
+
+  const inheritToggle = $("policyInheritToggle");
+  if (inheritToggle) {
+    inheritToggle.addEventListener("change", async () => {
+      if (inheritToggle.checked) {
+        await api("/api/policies/reset", {
+          method: "POST",
+          body: JSON.stringify({ workspace_path: state.policiesData?.workspace_path || "" })
+        }).then(renderApprovalPolicies);
+      } else {
+        await saveCurrentPolicy();
+      }
+    });
+  }
+
+  ["policyWriteFileSelect", "policyRunBashSelect", "policyRunPythonSelect", "policyGitOpsSelect"].forEach((id) => {
+    const el = $(id);
+    if (el) {
+      el.addEventListener("change", () => {
+        const inheritToggle = $("policyInheritToggle");
+        if (state.policyScope === "workspace" && inheritToggle && inheritToggle.checked) {
+          inheritToggle.checked = false;
+        }
+        saveCurrentPolicy();
+      });
+    }
+  });
+
+  const resetBtn = $("policyResetBtn");
+  if (resetBtn) {
+    resetBtn.addEventListener("click", async () => {
+      const res = await api("/api/policies/reset", {
+        method: "POST",
+        body: JSON.stringify({ workspace_path: state.policiesData?.workspace_path || "" })
+      });
+      renderApprovalPolicies(res);
+    });
+  }
 }
 
 function estimateTextTokens(text) {
@@ -1295,7 +1734,11 @@ function renderCodeIndex(index = {}) {
   $("indexFreshness").textContent = !hasIndex ? "Not indexed" : fresh === false ? "Changes detected" : fresh === true ? "Up to date" : "Ready";
   $("indexLastRun").textContent = index.last_indexed ? formatRelativeTime(index.last_indexed) : "Never";
   $("indexEmbeddingModel").textContent = index.embedding_model || "nomic-embed-text";
-  $("indexVectorBackend").textContent = index.vector_backend === "chromadb" ? "Advanced semantic search" : "Local fallback search";
+  $("indexVectorBackend").textContent = index.vector_backend === "chromadb"
+    ? "Advanced semantic search"
+    : index.vector_backend === "sqlite-vec"
+    ? "sqlite-vec accelerated search"
+    : "Local fallback search";
   $("indexStatusDot").className = hasIndex && fresh !== false ? "ready" : hasIndex ? "stale" : "";
   const embeddingError = index.embedding_error || "";
   const notice = embeddingError
@@ -2015,6 +2458,14 @@ $("showGitTab").addEventListener("click", () => showEditorView("git"));
 $("gitAuthMode").addEventListener("change", updateGitAuthPanel);
 $("cloneGitRepo").addEventListener("click", cloneGitRepository);
 $("pushGitChanges").addEventListener("click", () => previewGitPush().catch((error) => alert(error.message)));
+$("gitBranchSelect")?.addEventListener("change", (e) => switchGitBranch(e.target.value));
+$("gitNewBranchBtn")?.addEventListener("click", openNewBranchModal);
+$("newBranchCancelBtn")?.addEventListener("click", closeNewBranchModal);
+$("newBranchSubmitBtn")?.addEventListener("click", submitNewBranch);
+$("gitFetchBtn")?.addEventListener("click", fetchGitRepo);
+$("gitPullBtn")?.addEventListener("click", pullGitRepo);
+$("gitAbortMergeBtn")?.addEventListener("click", abortGitMerge);
+$("gitCompleteMergeBtn")?.addEventListener("click", completeGitMerge);
 $("approvalApprove").addEventListener("click", () => resolveApproval(true));
 $("approvalReject").addEventListener("click", () => resolveApproval(false));
 $("codeEditor").addEventListener("input", () => {
@@ -3366,6 +3817,7 @@ initPanelResizersAndToggles();
 setupSkillSlashAutocomplete();
 initSchematicArchitectureGraph();
 initIntegratedTerminal();
+initApprovalPoliciesUI();
 installEditorMetricStyles();
 updateGitAuthPanel();
 refresh().catch((err) => {

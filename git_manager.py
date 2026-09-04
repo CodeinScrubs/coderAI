@@ -5,6 +5,7 @@ from __future__ import annotations
 import difflib
 import base64
 import os
+import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -187,6 +188,202 @@ class GitManager:
         if result.returncode:
             raise GitError((result.stderr or result.stdout or "Git push failed").strip())
         return (result.stdout or result.stderr or "Push completed").strip()
+
+    def fetch(self, remote: str = "origin", username: str = "", token: str = "") -> str:
+        if not self.is_repo():
+            raise GitError("Workspace is not a Git repository")
+        env = self._credential_env(username, token)
+        result = subprocess.run(
+            ["git", "fetch", remote],
+            cwd=str(self.repo_path),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=300,
+            env=env,
+            startupinfo=self._startupinfo(),
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        if result.returncode:
+            raise GitError((result.stderr or result.stdout or "Git fetch failed").strip())
+        return (result.stdout or result.stderr or "Fetch completed").strip()
+
+    def pull(self, remote: str = "origin", branch: str = "", username: str = "", token: str = "") -> dict:
+        if not self.is_repo():
+            raise GitError("Workspace is not a Git repository")
+        env = self._credential_env(username, token)
+        cmd = ["git", "pull", remote]
+        if branch:
+            cmd.append(branch)
+        result = subprocess.run(
+            cmd,
+            cwd=str(self.repo_path),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=300,
+            env=env,
+            startupinfo=self._startupinfo(),
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        output = (result.stdout or "") + ("\n" + result.stderr if result.stderr else "")
+        output = output.strip()
+        if result.returncode != 0:
+            if self.is_in_merge() or "CONFLICT" in output or "Automatic merge failed" in output:
+                conflicts = self.get_conflicts()
+                return {
+                    "ok": False,
+                    "conflict": True,
+                    "message": output,
+                    "conflicts": conflicts,
+                }
+            raise GitError(output or "Git pull failed")
+        return {
+            "ok": True,
+            "conflict": False,
+            "message": output or "Already up to date.",
+            "conflicts": [],
+        }
+
+    def list_branches(self) -> dict:
+        if not self.is_repo():
+            return {"current": "", "local": [], "remote": [], "ahead": 0, "behind": 0}
+        current = self._run("branch", "--show-current", check=False).stdout.strip() or "HEAD"
+        local_res = self._run("branch", "--list", "--format=%(refname:short)", check=False)
+        local_branches = [b.strip() for b in local_res.stdout.splitlines() if b.strip()]
+
+        remote_res = self._run("branch", "-r", "--list", "--format=%(refname:short)", check=False)
+        remote_branches = [b.strip() for b in remote_res.stdout.splitlines() if b.strip() and not b.strip().endswith("/HEAD")]
+        ahead, behind = self.get_ahead_behind()
+        return {
+            "current": current,
+            "local": local_branches,
+            "remote": remote_branches,
+            "ahead": ahead,
+            "behind": behind,
+        }
+
+    def switch_branch(self, name: str, create: bool = False, start_point: str = "") -> dict:
+        if not self.is_repo():
+            raise GitError("Workspace is not a Git repository")
+        name = name.strip()
+        if not name:
+            raise GitError("Branch name cannot be empty")
+        cmd = ["checkout"]
+        if create:
+            cmd.extend(["-b", name])
+            if start_point.strip():
+                cmd.append(start_point.strip())
+        else:
+            cmd.append(name)
+        result = self._run(*cmd)
+        current = self._run("branch", "--show-current", check=False).stdout.strip() or name
+        return {"ok": True, "branch": current, "output": (result.stdout or result.stderr or "Switched branch").strip()}
+
+    def create_branch(self, name: str, start_point: str = "") -> dict:
+        return self.switch_branch(name, create=True, start_point=start_point)
+
+    def is_in_merge(self) -> bool:
+        if not self.is_repo():
+            return False
+        res = self._run("rev-parse", "-q", "--verify", "MERGE_HEAD", check=False)
+        if res.returncode == 0:
+            return True
+        git_dir_res = self._run("rev-parse", "--git-dir", check=False)
+        if git_dir_res.returncode == 0:
+            git_dir = Path(git_dir_res.stdout.strip())
+            if not git_dir.is_absolute():
+                git_dir = self.repo_path / git_dir
+            if (git_dir / "MERGE_HEAD").exists():
+                return True
+        return False
+
+    def get_conflicts(self) -> list[dict]:
+        if not self.is_repo():
+            return []
+        res = self._run("diff", "--name-only", "--diff-filter=U", check=False)
+        unmerged_files = [line.strip() for line in res.stdout.splitlines() if line.strip()]
+
+        conflict_pattern = re.compile(
+            r"<<<<<<<\s*(.*?)\r?\n(.*?)\r?\n=======\r?\n(.*?)\r?\n>>>>>>>\s*(.*?)(?:\r?\n|$)",
+            re.DOTALL,
+        )
+        conflicts = []
+        for rel_path in unmerged_files:
+            file_path = self.repo_path / rel_path
+            hunks = []
+            if file_path.is_file():
+                try:
+                    content = file_path.read_text(encoding="utf-8", errors="replace")
+                    for match in conflict_pattern.finditer(content):
+                        hunks.append({
+                            "ours_label": match.group(1).strip(),
+                            "ours": match.group(2),
+                            "theirs": match.group(3),
+                            "theirs_label": match.group(4).strip(),
+                        })
+                except Exception:
+                    pass
+            conflicts.append({
+                "path": rel_path.replace("\\", "/"),
+                "hunks": hunks,
+                "count": len(hunks),
+            })
+        return conflicts
+
+    def resolve_conflict(self, path: str, resolution: str, custom_content: str = "") -> dict:
+        if not self.is_repo():
+            raise GitError("Workspace is not a Git repository")
+        target = self._safe_file(path)
+        rel_path = str(target.relative_to(self.repo_path)).replace("\\", "/")
+
+        resolution = resolution.lower().strip()
+        if resolution in ("ours", "current"):
+            self._run("checkout", "--ours", "--", rel_path)
+            self._run("add", "--", rel_path)
+        elif resolution in ("theirs", "incoming"):
+            self._run("checkout", "--theirs", "--", rel_path)
+            self._run("add", "--", rel_path)
+        elif resolution == "custom":
+            target.write_text(custom_content, encoding="utf-8")
+            self._run("add", "--", rel_path)
+        elif resolution in ("mark_resolved", "resolved"):
+            self._run("add", "--", rel_path)
+        else:
+            raise GitError(f"Unknown resolution type: {resolution}. Must be 'ours', 'theirs', 'custom', or 'mark_resolved'.")
+
+        remaining = self.get_conflicts()
+        in_merge = self.is_in_merge()
+        return {
+            "ok": True,
+            "path": rel_path,
+            "resolution": resolution,
+            "remaining_conflicts": len(remaining),
+            "in_merge": in_merge,
+            "conflicts": remaining,
+        }
+
+    def abort_merge(self) -> str:
+        if not self.is_repo():
+            raise GitError("Workspace is not a Git repository")
+        if not self.is_in_merge():
+            return "No merge in progress."
+        result = self._run("merge", "--abort")
+        return (result.stdout or result.stderr or "Merge aborted").strip()
+
+    def complete_merge(self, message: str = "") -> str:
+        if not self.is_repo():
+            raise GitError("Workspace is not a Git repository")
+        remaining = self.get_conflicts()
+        if remaining:
+            paths = ", ".join(c["path"] for c in remaining)
+            raise GitError(f"Cannot complete merge. Conflicted files remain: {paths}")
+        self._ensure_identity()
+        msg = message.strip() or "Merge resolved conflicts"
+        self._run("commit", "-m", msg)
+        return self._run("rev-parse", "HEAD").stdout.strip()
 
     def stage_files(self, files: list[str]) -> None:
         if not files:

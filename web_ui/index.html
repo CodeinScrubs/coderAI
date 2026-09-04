@@ -286,10 +286,78 @@
 
           <details class="advanced-settings">
             <summary>Advanced settings</summary>
-            <div class="settings-card">
-              <span class="settings-card-title">Git checkpoints</span>
-              <label><input id="gitApprovalMode" type="checkbox" checked> Review every file diff before writing</label>
-              <span class="settings-note">Agent writes stay in review mode unless you explicitly trust automatic changes.</span>
+            <div class="settings-card policy-card">
+              <div class="policy-header-row">
+                <span class="settings-card-title">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px;color:#38bdf8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                  Security &amp; Approval Policies
+                </span>
+                <div class="policy-scope-toggle">
+                  <button id="policyScopeWorkspaceBtn" type="button" class="chip active">This Workspace</button>
+                  <button id="policyScopeGlobalBtn" type="button" class="chip">Global Defaults</button>
+                </div>
+              </div>
+
+              <div id="policyWorkspaceBanner" class="policy-workspace-banner">
+                <span class="policy-target-title">Target: <strong id="policyWorkspaceName">Loading...</strong></span>
+                <label class="policy-inherit-label">
+                  <input id="policyInheritToggle" type="checkbox" checked>
+                  Inherit global security defaults
+                </label>
+              </div>
+
+              <div id="policyControlsGrid" class="policy-grid">
+                <div class="policy-item">
+                  <div class="policy-item-info">
+                    <strong>File Modifications</strong>
+                    <span><code>write_file</code>, <code>replace_in_file</code></span>
+                  </div>
+                  <select id="policyWriteFileSelect" class="policy-select">
+                    <option value="always">Always review (Diff preview)</option>
+                    <option value="auto">Auto-execute</option>
+                  </select>
+                </div>
+
+                <div class="policy-item">
+                  <div class="policy-item-info">
+                    <strong>Terminal / Shell</strong>
+                    <span><code>run_bash</code>, <code>run_terminal_command</code></span>
+                  </div>
+                  <select id="policyRunBashSelect" class="policy-select">
+                    <option value="dangerous_only">Dangerous commands only (rm, del, sudo...)</option>
+                    <option value="always">Always review every command</option>
+                    <option value="auto">Auto-execute</option>
+                  </select>
+                </div>
+
+                <div class="policy-item">
+                  <div class="policy-item-info">
+                    <strong>Python Execution</strong>
+                    <span><code>run_python</code> code runner</span>
+                  </div>
+                  <select id="policyRunPythonSelect" class="policy-select">
+                    <option value="always">Always review script</option>
+                    <option value="auto">Auto-execute</option>
+                  </select>
+                </div>
+
+                <div class="policy-item">
+                  <div class="policy-item-info">
+                    <strong>Git Operations</strong>
+                    <span><code>git_push</code>, <code>git_revert</code></span>
+                  </div>
+                  <select id="policyGitOpsSelect" class="policy-select">
+                    <option value="always">Always review operations</option>
+                    <option value="auto">Auto-execute</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="policy-footer">
+                <button id="policyResetBtn" type="button" class="ghost small-btn">Reset Workspace to Defaults</button>
+                <span id="policyStatusMsg" class="policy-status"></span>
+                <input id="gitApprovalMode" type="checkbox" style="display:none;" checked>
+              </div>
             </div>
 
             <div class="settings-card">
@@ -380,10 +448,44 @@
           <textarea id="codeEditor" class="code-editor" spellcheck="false" wrap="off" placeholder="Select or generate code to edit it here." disabled></textarea>
         </div>
         <div id="gitHistoryView" class="git-history-view editor-view">
+          <!-- Git Toolbar -->
+          <section id="gitToolbar" class="git-toolbar">
+            <div class="git-toolbar-left">
+              <span class="git-toolbar-label">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:14px;height:14px;"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+                Branch:
+              </span>
+              <select id="gitBranchSelect" class="git-branch-select" title="Switch Branch"></select>
+              <button id="gitNewBranchBtn" type="button" class="ghost small-btn" title="Create new branch">+ New Branch</button>
+            </div>
+            <div class="git-toolbar-right">
+              <span id="gitSyncBadge" class="git-sync-badge" style="display:none;" title="Ahead / Behind remote"></span>
+              <button id="gitFetchBtn" type="button" class="ghost small-btn" title="Fetch updates from remote">Fetch</button>
+              <button id="gitPullBtn" type="button" class="ghost small-btn" title="Pull updates into current branch">Pull</button>
+              <button id="pushGitChanges" type="button" class="primary small-btn" disabled>Push changes</button>
+            </div>
+          </section>
+
+          <!-- Merge Conflict Assistant Panel -->
+          <section id="gitConflictPanel" class="git-conflict-panel" style="display:none;">
+            <div class="git-conflict-header">
+              <div class="git-conflict-title">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;color:#f59e0b;"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                <strong>Merge Conflict Assistant</strong>
+                <span id="conflictSummaryBadge" class="conflict-badge">0 unmerged files</span>
+              </div>
+              <div class="git-conflict-actions">
+                <button id="gitAbortMergeBtn" type="button" class="danger ghost small-btn" title="Cancel merge and restore working state">Abort Merge</button>
+                <button id="gitCompleteMergeBtn" type="button" class="primary small-btn" title="Finalize merge after resolving all conflicts">Complete Merge</button>
+              </div>
+            </div>
+            <p class="git-conflict-desc">Unmerged files detected. Resolve conflicts by keeping your changes (Ours), incoming changes (Theirs), or editing directly in the editor.</p>
+            <div id="gitConflictList" class="git-conflict-list"></div>
+          </section>
+
           <section class="git-connect-panel">
             <div class="git-connect-title">
-              <strong>Connect repository</strong>
-              <button id="pushGitChanges" type="button" class="primary" disabled>Push changes</button>
+              <strong>Remote repository</strong>
             </div>
             <label>Repository URL <input id="gitRemoteUrl" type="text" placeholder="https://github.com/owner/repository.git"></label>
             <label>Clone folder <input id="gitCloneDestination" type="text" placeholder="C:\path\to\projects"></label>
@@ -645,6 +747,10 @@
           <span class="approval-label">Workspace</span>
           <code id="approvalWorkspace"></code>
         </div>
+        <div id="approvalPolicyRow" class="approval-meta" style="display:none;">
+          <span class="approval-label">Policy</span>
+          <span id="approvalPolicyReason" style="font-size:12px;color:var(--amber);line-height:1.4;"></span>
+        </div>
         <div id="approvalPreviewLabel" class="approval-label" style="margin-top:10px;">Command / Code preview</div>
         <pre id="approvalPreview" class="approval-preview"></pre>
         <label class="approval-always">
@@ -706,6 +812,30 @@
     </div>
   </div>
 
+  <!-- New Branch Modal -->
+  <div id="newBranchModal" class="approval-modal" style="display:none;">
+    <div class="approval-card" style="max-width: 420px;">
+      <div class="approval-header">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:20px;height:20px;color:var(--teal);"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+        <strong>Create New Branch</strong>
+      </div>
+      <div class="approval-body" style="display:grid;gap:12px;">
+        <label style="display:grid;gap:5px;font-size:11.5px;color:var(--text-dim);">
+          Branch Name
+          <input id="newBranchNameInput" type="text" placeholder="e.g. feature/my-branch" class="model-text-input">
+        </label>
+        <label style="display:grid;gap:5px;font-size:11.5px;color:var(--text-dim);">
+          Start Point (Optional)
+          <input id="newBranchStartPointInput" type="text" placeholder="HEAD, main, or commit hash (default: HEAD)" class="model-text-input">
+        </label>
+      </div>
+      <div class="approval-actions" style="margin-top:16px;">
+        <button id="newBranchCancelBtn" type="button" class="ghost">Cancel</button>
+        <button id="newBranchSubmitBtn" type="button" class="primary">Create &amp; Switch</button>
+      </div>
+    </div>
+  </div>
+
   <div id="loadingOverlay" class="loading-overlay">
     <div class="loader-card">
       <div class="spinner"></div>
@@ -716,6 +846,6 @@
   <script src="/vendor/xterm/xterm.js"></script>
   <script src="/vendor/xterm/xterm-addon-fit.js"></script>
   <script src="/vendor/xterm/xterm-addon-web-links.js"></script>
-  <script src="/app.js?v=xterm-20260903-8"></script>
+  <script src="/app.js?v=git-branches-conflicts-20260904-1"></script>
 </body>
 </html>

@@ -345,25 +345,96 @@ def create_app() -> FastAPI:
     async def get_git():
         return web_app._git_snapshot()
 
-    @app.post("/api/git/commit")
-    async def git_commit(request: Request):
-        data = await request.json()
-        msg = data.get("message", "Update via CoderAI")
-        ok, out = web_app._git_manager().commit(msg)
-        return {"ok": ok, "output": out, "git": web_app._git_snapshot()}
+    @app.post("/api/git/init")
+    async def git_init():
+        web_app._git_manager().init_repo()
+        return web_app._git_snapshot()
+
+    @app.post("/api/git/push-preview")
+    async def git_push_preview():
+        preview = web_app._git_manager().get_push_preview()
+        if not preview.get("remote"):
+            raise HTTPException(status_code=400, detail="This repository has no origin remote")
+        return preview
 
     @app.post("/api/git/push")
-    async def git_push():
-        ok, out = web_app._git_manager().push()
-        return {"ok": ok, "output": out, "git": web_app._git_snapshot()}
-
-    @app.post("/api/git/auth")
-    async def git_auth(request: Request):
+    async def git_push(request: Request):
         data = await request.json()
-        token = data.get("token", "")
-        repo_url = data.get("repo_url", "")
-        ok, out = web_app._git_manager().set_auth(token, repo_url)
-        return {"ok": ok, "output": out, "git": web_app._git_snapshot()}
+        if data.get("approved") is not True:
+            raise HTTPException(status_code=403, detail="Explicit user approval is required before push")
+        output = web_app._git_manager().push(
+            username=str(data.get("username") or ""),
+            token=str(data.get("token") or ""),
+        )
+        return {"ok": True, "message": output, "git": web_app._git_snapshot()}
+
+    @app.post("/api/git/fetch")
+    async def git_fetch(request: Request):
+        data = await request.json()
+        output = web_app._git_manager().fetch(
+            remote=str(data.get("remote") or "origin"),
+            username=str(data.get("username") or ""),
+            token=str(data.get("token") or ""),
+        )
+        return {"ok": True, "message": output, "git": web_app._git_snapshot()}
+
+    @app.post("/api/git/pull")
+    async def git_pull(request: Request):
+        data = await request.json()
+        result = web_app._git_manager().pull(
+            remote=str(data.get("remote") or "origin"),
+            branch=str(data.get("branch") or ""),
+            username=str(data.get("username") or ""),
+            token=str(data.get("token") or ""),
+        )
+        return {"ok": result.get("ok", False), "conflict": result.get("conflict", False), "message": result.get("message", ""), "git": web_app._git_snapshot()}
+
+    @app.post("/api/git/branch/switch")
+    async def git_branch_switch(request: Request):
+        data = await request.json()
+        name = str(data.get("name") or data.get("branch") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Branch name is required")
+        res = web_app._git_manager().switch_branch(name)
+        return {"ok": True, "branch": res.get("branch"), "message": res.get("output", ""), "git": web_app._git_snapshot()}
+
+    @app.post("/api/git/branch/create")
+    async def git_branch_create(request: Request):
+        data = await request.json()
+        name = str(data.get("name") or data.get("branch") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Branch name is required")
+        start_point = str(data.get("start_point") or "").strip()
+        res = web_app._git_manager().create_branch(name, start_point=start_point)
+        return {"ok": True, "branch": res.get("branch"), "message": res.get("output", ""), "git": web_app._git_snapshot()}
+
+    @app.post("/api/git/conflicts/resolve")
+    async def git_conflict_resolve(request: Request):
+        data = await request.json()
+        path_str = str(data.get("path") or "").strip()
+        resolution = str(data.get("resolution") or "").strip()
+        custom = str(data.get("custom_content") or "")
+        if not path_str or not resolution:
+            raise HTTPException(status_code=400, detail="path and resolution are required")
+        res = web_app._git_manager().resolve_conflict(path_str, resolution, custom_content=custom)
+        return {"ok": True, "result": res, "git": web_app._git_snapshot()}
+
+    @app.post("/api/git/merge/abort")
+    async def git_merge_abort():
+        out = web_app._git_manager().abort_merge()
+        return {"ok": True, "message": out, "git": web_app._git_snapshot()}
+
+    @app.post("/api/git/merge/complete")
+    async def git_merge_complete(request: Request):
+        data = await request.json()
+        message = str(data.get("message") or "").strip()
+        commit_hash = web_app._git_manager().complete_merge(message)
+        return {"ok": True, "commit": commit_hash, "git": web_app._git_snapshot()}
+
+    @app.post("/api/git/revert/{commit_hash}")
+    async def git_revert(commit_hash: str):
+        new_hash = web_app._git_manager().revert_to(commit_hash)
+        return {"ok": True, "commit": new_hash, "git": web_app._git_snapshot()}
 
     @app.get("/api/approval")
     async def get_approval():
@@ -375,6 +446,20 @@ def create_app() -> FastAPI:
         approved = bool(data.get("approved"))
         web_app.respond_to_approval(approved)
         return {"ok": True}
+
+    @app.get("/api/policies")
+    async def get_policies(workspace_path: str = ""):
+        return web_app._get_policies_payload(workspace_path or None)
+
+    @app.post("/api/policies")
+    async def update_policies(request: Request):
+        data = await request.json()
+        return web_app._update_policy_payload(data)
+
+    @app.post("/api/policies/reset")
+    async def reset_policies(request: Request):
+        data = await request.json()
+        return web_app._reset_policy_payload(data)
 
     @app.post("/api/scan")
     async def scan_project(request: Request):

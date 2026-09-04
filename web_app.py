@@ -441,15 +441,37 @@ def _sync_tool_settings() -> None:
     set_sandbox_config(str(STATE.get("sandbox_mode", "auto")), str(STATE.get("sandbox_docker_image", "python:3.11-slim")))
 
 
+def _git_manager() -> GitManager:
+    return GitManager(get_workspace())
+
+
 def _git_snapshot() -> dict:
     try:
-        manager = GitManager(get_workspace())
+        manager = _git_manager()
         status = manager.get_status()
         status["history"] = manager.get_log(30) if status.get("is_repo") else []
         status["approval_mode"] = bool(STATE.get("git_approval_mode", True))
+        if status.get("is_repo"):
+            status["branches"] = manager.list_branches()
+            status["in_merge"] = manager.is_in_merge()
+            status["conflicts"] = manager.get_conflicts() if status["in_merge"] else []
+        else:
+            status["branches"] = {"current": "", "local": [], "remote": [], "ahead": 0, "behind": 0}
+            status["in_merge"] = False
+            status["conflicts"] = []
         return status
     except Exception as exc:
-        return {"is_repo": False, "branch": None, "files": [], "history": [], "error": str(exc), "approval_mode": bool(STATE.get("git_approval_mode", True))}
+        return {
+            "is_repo": False,
+            "branch": None,
+            "files": [],
+            "history": [],
+            "branches": {"current": "", "local": [], "remote": [], "ahead": 0, "behind": 0},
+            "in_merge": False,
+            "conflicts": [],
+            "error": str(exc),
+            "approval_mode": bool(STATE.get("git_approval_mode", True)),
+        }
 
 
 def _memory_manager() -> MemoryManager:
@@ -2027,6 +2049,37 @@ def _skills_payload() -> list[dict]:
     ]
 
 
+def _get_policies_payload(target_workspace: str | None = None) -> dict:
+    from approval_policy import policy_manager
+    ws = target_workspace or str(get_workspace())
+    return {
+        "workspace_path": ws,
+        "global": policy_manager.get_global_policy(),
+        "workspace": policy_manager.get_workspace_policy(ws),
+        "effective": policy_manager.get_effective_policy(ws),
+    }
+
+
+def _update_policy_payload(data: dict) -> dict:
+    from approval_policy import policy_manager
+    scope = data.get("scope", "workspace")
+    policy = data.get("policy", {})
+    mode = data.get("mode", "custom")
+    ws = data.get("workspace_path") or str(get_workspace())
+    if scope == "global":
+        policy_manager.save_global_policy(policy)
+    else:
+        policy_manager.save_workspace_policy(ws, mode=mode, policy=policy)
+    return _get_policies_payload(ws)
+
+
+def _reset_policy_payload(data: dict) -> dict:
+    from approval_policy import policy_manager
+    ws = data.get("workspace_path") or str(get_workspace())
+    policy_manager.reset_workspace_policy(ws)
+    return _get_policies_payload(ws)
+
+
 def _client_state(session_id: str | None = None) -> dict:
     st = get_session_state(session_id)
     models_payload = _available_models()
@@ -2059,6 +2112,7 @@ def _client_state(session_id: str | None = None) -> dict:
             "smart_skill_confirmation": st["smart_skill_confirmation"],
             "sandbox_mode": st.get("sandbox_mode", "auto"),
             "sandbox_docker_image": st.get("sandbox_docker_image", "python:3.11-slim"),
+            "policies": _get_policies_payload(),
         },
         "memory": {
             "enabled": st["memory_enabled"],
@@ -2119,6 +2173,11 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         if path == "/api/approval":
             _send_json(self, get_approval_state())
+            return
+        if path == "/api/policies":
+            query = parse_qs(parsed.query)
+            ws = query.get("workspace_path", [None])[0]
+            _send_json(self, _get_policies_payload(ws))
             return
         if path == "/api/ollama/embedding-status":
             status = EmbeddingModelManager.get_instance().get_status()
@@ -2593,6 +2652,12 @@ class Handler(BaseHTTPRequestHandler):
                 reject_pending(data.get("reason", ""))
                 _send_json(self, get_approval_state())
                 return
+            if path == "/api/policies":
+                _send_json(self, _update_policy_payload(data))
+                return
+            if path == "/api/policies/reset":
+                _send_json(self, _reset_policy_payload(data))
+                return
             if path == "/api/git/approve":
                 approve_pending(bool(data.get("always_allow_for_session")))
                 _send_json(self, get_approval_state())
@@ -2653,6 +2718,66 @@ class Handler(BaseHTTPRequestHandler):
                 commit_hash = path.rsplit("/", 1)[-1]
                 new_hash = GitManager(get_workspace()).revert_to(commit_hash)
                 _send_json(self, {"ok": True, "commit": new_hash, "git": _git_snapshot()})
+                return
+            if path == "/api/git/fetch":
+                manager = _git_manager()
+                out = manager.fetch(
+                    remote=str(data.get("remote") or "origin"),
+                    username=str(data.get("username") or ""),
+                    token=str(data.get("token") or ""),
+                )
+                _send_json(self, {"ok": True, "message": out, "git": _git_snapshot()})
+                return
+            if path == "/api/git/pull":
+                manager = _git_manager()
+                result = manager.pull(
+                    remote=str(data.get("remote") or "origin"),
+                    branch=str(data.get("branch") or ""),
+                    username=str(data.get("username") or ""),
+                    token=str(data.get("token") or ""),
+                )
+                _send_json(self, {"ok": result.get("ok", False), "conflict": result.get("conflict", False), "message": result.get("message", ""), "git": _git_snapshot()})
+                return
+            if path == "/api/git/branch/switch":
+                branch_name = str(data.get("name") or data.get("branch") or "").strip()
+                if not branch_name:
+                    _send_json(self, {"error": "Branch name is required"}, 400)
+                    return
+                manager = _git_manager()
+                res = manager.switch_branch(branch_name)
+                _send_json(self, {"ok": True, "branch": res.get("branch"), "message": res.get("output", ""), "git": _git_snapshot()})
+                return
+            if path == "/api/git/branch/create":
+                branch_name = str(data.get("name") or data.get("branch") or "").strip()
+                if not branch_name:
+                    _send_json(self, {"error": "Branch name is required"}, 400)
+                    return
+                start_point = str(data.get("start_point") or "").strip()
+                manager = _git_manager()
+                res = manager.create_branch(branch_name, start_point=start_point)
+                _send_json(self, {"ok": True, "branch": res.get("branch"), "message": res.get("output", ""), "git": _git_snapshot()})
+                return
+            if path == "/api/git/conflicts/resolve":
+                target_path = str(data.get("path") or "").strip()
+                resolution = str(data.get("resolution") or "").strip()
+                custom_content = str(data.get("custom_content") or "")
+                if not target_path or not resolution:
+                    _send_json(self, {"error": "path and resolution are required"}, 400)
+                    return
+                manager = _git_manager()
+                res = manager.resolve_conflict(target_path, resolution, custom_content=custom_content)
+                _send_json(self, {"ok": True, "result": res, "git": _git_snapshot()})
+                return
+            if path == "/api/git/merge/abort":
+                manager = _git_manager()
+                out = manager.abort_merge()
+                _send_json(self, {"ok": True, "message": out, "git": _git_snapshot()})
+                return
+            if path == "/api/git/merge/complete":
+                message = str(data.get("message") or "").strip()
+                manager = _git_manager()
+                commit_hash = manager.complete_merge(message)
+                _send_json(self, {"ok": True, "commit": commit_hash, "git": _git_snapshot()})
                 return
             if path == "/api/terminal/exec":
                 session_id = data.get("session_id", "default")

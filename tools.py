@@ -25,6 +25,7 @@ from git_manager import GitManager
 from codebase_index import CodebaseIndex, IncrementalIndexer
 from workspace_filter import iter_workspace_files, walk_workspace
 from sandbox_runner import SandboxRunner
+from approval_policy import policy_manager
 
 MAX_OUTPUT_CHARS = 8_000
 EXEC_TIMEOUT     = 15
@@ -634,13 +635,18 @@ def tool_write_file(path: str, content: str) -> str:
     try:
         p = _safe_path(path)
         manager = GitManager(get_workspace())
-        if manager.is_repo():
-            preview = manager.get_diff_preview(path, content)
-            if preview and GIT_APPROVAL_MODE:
-                if not _approval_state["always_allow"] and (not _approval_state["approved"] or _approval_state["tool_name"] != "write_file"):
-                    _request_approval("write_file", {"path": path, "content": content}, preview)
-                _approval_state["approved"] = False
-                _approval_state["tool_name"] = ""
+        ws = get_workspace()
+        arguments = {"path": path, "content": content}
+        req_approval, reason, _ = policy_manager.should_require_approval("write_file", arguments, ws)
+        if not GIT_APPROVAL_MODE:
+            req_approval = False
+
+        if req_approval and not _approval_state["always_allow"]:
+            preview = manager.get_diff_preview(path, content) if manager.is_repo() else f"Create/overwrite file: {path} ({len(content)} bytes)"
+            if not _approval_state["approved"] or _approval_state["tool_name"] != "write_file":
+                _request_approval("write_file", arguments, preview)
+            _approval_state["approved"] = False
+            _approval_state["tool_name"] = ""
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
         _update_code_index(path)
@@ -731,9 +737,13 @@ def tool_run_bash(command: str) -> str:
     is_dangerous, danger_reason = _is_destructive_command(command)
     if is_dangerous:
         return f"Security Error: Command blocked due to potentially destructive system operation ({danger_reason})."
-    if not _approval_state["always_allow"]:
+    ws = get_workspace()
+    arguments = {"command": command}
+    req_approval, reason, _ = policy_manager.should_require_approval("run_bash", arguments, ws)
+
+    if req_approval and not _approval_state["always_allow"]:
         if not _approval_state["approved"] or _approval_state["tool_name"] != "run_bash":
-            _request_approval("run_bash", {"command": command}, command)
+            _request_approval("run_bash", arguments, command)
         # Clear approval flag after consuming it
         _approval_state["approved"] = False
         _approval_state["tool_name"] = ""
@@ -770,9 +780,13 @@ def tool_run_bash(command: str) -> str:
 def tool_run_python(code: str) -> str:
     if is_execution_cancelled():
         return "Execution cancelled by user."
-    if not _approval_state["always_allow"]:
+    ws = get_workspace()
+    arguments = {"code": code}
+    req_approval, reason, _ = policy_manager.should_require_approval("run_python", arguments, ws)
+
+    if req_approval and not _approval_state["always_allow"]:
         if not _approval_state["approved"] or _approval_state["tool_name"] != "run_python":
-            _request_approval("run_python", {"code": code}, code)
+            _request_approval("run_python", arguments, code)
         # Clear approval flag after consuming it
         _approval_state["approved"] = False
         _approval_state["tool_name"] = ""
@@ -949,15 +963,18 @@ def tool_replace_in_file(path: str, old: str, new: str, regex: bool = False, cou
             updated = text.replace(old, new, int(count or 0))
         if updated == text:
             return f"No replacements were made: {path}"
-        manager = GitManager(get_workspace())
-        if manager.is_repo():
-            preview = manager.get_diff_preview(path, updated)
-            if preview and GIT_APPROVAL_MODE:
-                arguments = {"path": path, "old": old, "new": new, "regex": regex, "count": count}
-                if not _approval_state["always_allow"] and (not _approval_state["approved"] or _approval_state["tool_name"] != "replace_in_file"):
-                    _request_approval("replace_in_file", arguments, preview)
-                _approval_state["approved"] = False
-                _approval_state["tool_name"] = ""
+        ws = get_workspace()
+        arguments = {"path": path, "old": old, "new": new, "regex": regex, "count": count}
+        req_approval, reason, _ = policy_manager.should_require_approval("replace_in_file", arguments, ws)
+        if not GIT_APPROVAL_MODE:
+            req_approval = False
+
+        if req_approval and not _approval_state["always_allow"]:
+            preview = manager.get_diff_preview(path, updated) if manager.is_repo() else f"Replace occurrences in {path}"
+            if not _approval_state["approved"] or _approval_state["tool_name"] != "replace_in_file":
+                _request_approval("replace_in_file", arguments, preview)
+            _approval_state["approved"] = False
+            _approval_state["tool_name"] = ""
         p.write_text(updated, encoding="utf-8")
         _update_code_index(path)
         commit_hash = ""

@@ -14,7 +14,10 @@ import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from vector_store import LocalEmbeddingProvider, SharedVectorStore, cosine_similarity
+from vector_store import (
+    LocalEmbeddingProvider, SharedVectorStore, cosine_similarity,
+    is_sqlite_vec_available, load_sqlite_vec, serialize_vector_f32,
+)
 from workspace_filter import is_ignored_workspace_path, iter_workspace_files
 from project_intelligence import (
     DependencyGraphBuilder, FileNode, HierarchicalSummarizer, ProjectGraph, QueryRouter, QueryType,
@@ -113,6 +116,7 @@ class CodebaseIndex:
         self.collection = "code_chunks"
         self.embedding_error = ""
         self._embedding_disabled = False
+        self.sqlite_vec_available = is_sqlite_vec_available()
         self._init_schema()
 
     def refresh_embedding_provider(self, model: str | None = None) -> None:
@@ -125,7 +129,37 @@ class CodebaseIndex:
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA journal_mode=WAL")
         db.execute("PRAGMA busy_timeout=30000")
+        if getattr(self, "sqlite_vec_available", False):
+            load_sqlite_vec(db)
         return db
+
+    def _ensure_vec_table(self, db: sqlite3.Connection, dim: int) -> bool:
+        if not getattr(self, "sqlite_vec_available", False) or dim <= 0:
+            return False
+        try:
+            exists = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='vec_code_chunks'").fetchone()
+            if exists and exists[0]:
+                sql = exists[0]
+                if f"float[{dim}]" not in sql:
+                    db.execute("DROP TABLE IF EXISTS vec_code_chunks")
+                    exists = None
+            if not exists:
+                db.execute(f"CREATE VIRTUAL TABLE vec_code_chunks USING vec0(chunk_id text primary key, embedding float[{dim}] distance_metric=cosine)")
+                # Backfill from code_chunks if any
+                rows = db.execute("SELECT id, embedding FROM code_chunks WHERE embedding IS NOT NULL").fetchall()
+                for r in rows:
+                    try:
+                        v = json.loads(r["embedding"])
+                        if isinstance(v, list) and len(v) == dim:
+                            db.execute(
+                                "INSERT OR REPLACE INTO vec_code_chunks(chunk_id, embedding) VALUES (?, ?)",
+                                (r["id"], serialize_vector_f32(v)),
+                            )
+                    except Exception:
+                        pass
+            return True
+        except Exception:
+            return False
 
     def _init_schema(self):
         with self._connect() as db:
@@ -181,6 +215,11 @@ class CodebaseIndex:
         with self._connect() as db:
             old_ids = [row[0] for row in db.execute("SELECT id FROM code_chunks")]
             db.execute("DELETE FROM code_fts")
+            if getattr(self, "sqlite_vec_available", False):
+                try:
+                    db.execute("DELETE FROM vec_code_chunks")
+                except Exception:
+                    pass
             db.execute("DELETE FROM code_chunks")
             db.execute("DELETE FROM indexed_files")
         self.vector_store.delete(self.collection, ids=old_ids)
@@ -236,6 +275,15 @@ class CodebaseIndex:
                      chunk.content, chunk.docstring, json.dumps(chunk.embedding) if chunk.embedding else None, chunk.last_modified, chunk.content_hash),
                 )
                 db.execute("INSERT INTO code_fts VALUES (?, ?, ?, ?, ?)", (chunk.id, chunk.file_path, chunk.symbol_name or "", chunk.content, chunk.docstring or ""))
+                if getattr(self, "sqlite_vec_available", False) and chunk.embedding:
+                    if self._ensure_vec_table(db, len(chunk.embedding)):
+                        try:
+                            db.execute(
+                                "INSERT OR REPLACE INTO vec_code_chunks(chunk_id, embedding) VALUES (?, ?)",
+                                (chunk.id, serialize_vector_f32(chunk.embedding)),
+                            )
+                        except Exception:
+                            pass
             db.execute("INSERT OR REPLACE INTO indexed_files VALUES (?, ?, ?, ?, ?)", (rel, digest, path.stat().st_mtime, path.stat().st_size, time.time()))
         embedded = [chunk for chunk in chunks if chunk.embedding]
         self.vector_store.upsert(
@@ -253,6 +301,12 @@ class CodebaseIndex:
             ids = [row[0] for row in db.execute("SELECT id FROM code_chunks WHERE file_path=?", (rel,))]
             for chunk_id in ids:
                 db.execute("DELETE FROM code_fts WHERE chunk_id=?", (chunk_id,))
+            if getattr(self, "sqlite_vec_available", False) and ids:
+                try:
+                    placeholders = ",".join("?" for _ in ids)
+                    db.execute(f"DELETE FROM vec_code_chunks WHERE chunk_id IN ({placeholders})", ids)
+                except Exception:
+                    pass
             db.execute("DELETE FROM code_chunks WHERE file_path=?", (rel,))
             db.execute("DELETE FROM indexed_files WHERE file_path=?", (rel,))
         self.vector_store.delete(self.collection, ids=ids)
@@ -315,7 +369,7 @@ class CodebaseIndex:
         return {
             "files": files, "chunks": chunks, "symbols": symbols, "last_indexed": last,
             "up_to_date": self._is_up_to_date() if check_freshness else None, "database": str(self.db_path),
-            "vector_backend": "chromadb" if self.vector_store.available else "sqlite-embedding-fallback",
+            "vector_backend": "chromadb" if self.vector_store.available else ("sqlite-vec" if getattr(self, "sqlite_vec_available", False) else "sqlite-embedding-fallback"),
             "vector_error": self.vector_store.error, "embedding_model": self.embedding_provider.model,
             "embedding_error": self.embedding_error,
             "graph_nodes": graph_nodes, "graph_edges": graph_edges,
@@ -693,6 +747,43 @@ class CodebaseIndex:
         chroma = self.vector_store.query(self.collection, vector, limit)
         if chroma:
             return chroma
+
+        # Optional sqlite-vec acceleration for SQLite semantic fallback
+        if getattr(self, "sqlite_vec_available", False) and vector:
+            # 1. Try vec0 virtual table (fast ANN search)
+            try:
+                with self._connect() as db:
+                    if self._ensure_vec_table(db, len(vector)):
+                        vec_bytes = serialize_vector_f32(vector)
+                        rows = db.execute(
+                            "SELECT chunk_id AS id, (1.0 - distance) AS score FROM vec_code_chunks WHERE embedding MATCH ? AND k = ?",
+                            (vec_bytes, limit),
+                        ).fetchall()
+                        if rows:
+                            return [{"id": row["id"], "score": float(row["score"])} for row in rows]
+            except Exception:
+                pass
+
+            # 2. Try vec_distance_cosine scalar acceleration directly on code_chunks
+            try:
+                with self._connect() as db:
+                    q_json = json.dumps(vector)
+                    rows = db.execute(
+                        """
+                        SELECT id, (1.0 - vec_distance_cosine(embedding, ?)) AS score
+                        FROM code_chunks
+                        WHERE embedding IS NOT NULL
+                        ORDER BY vec_distance_cosine(embedding, ?) ASC
+                        LIMIT ?
+                        """,
+                        (q_json, q_json, limit),
+                    ).fetchall()
+                    if rows:
+                        return [{"id": row["id"], "score": float(row["score"])} for row in rows]
+            except Exception:
+                pass
+
+        # Standard pure-Python cosine similarity fallback
         with self._connect() as db:
             rows = db.execute("SELECT id, embedding FROM code_chunks WHERE embedding IS NOT NULL").fetchall()
         scored = [{"id": row["id"], "score": cosine_similarity(vector, json.loads(row["embedding"]))} for row in rows]

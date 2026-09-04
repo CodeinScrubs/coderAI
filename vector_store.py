@@ -227,3 +227,46 @@ def cosine_similarity(left: list[float], right: list[float]) -> float:
         return 0.0
     denominator = math.sqrt(sum(value * value for value in left)) * math.sqrt(sum(value * value for value in right))
     return sum(a * b for a, b in zip(left, right)) / denominator if denominator else 0.0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ── Optional sqlite-vec Acceleration
+# ══════════════════════════════════════════════════════════════════════════════
+
+import sqlite3
+import struct
+
+try:
+    import sqlite_vec
+    SQLITE_VEC_AVAILABLE = True
+except (ImportError, OSError):
+    sqlite_vec = None
+    SQLITE_VEC_AVAILABLE = False
+
+
+def is_sqlite_vec_available() -> bool:
+    """Return True if sqlite-vec extension is installed and loadable."""
+    return bool(SQLITE_VEC_AVAILABLE and sqlite_vec is not None)
+
+
+def load_sqlite_vec(db: sqlite3.Connection) -> bool:
+    """Load the sqlite-vec extension into the provided SQLite connection."""
+    if not SQLITE_VEC_AVAILABLE or sqlite_vec is None:
+        return False
+    try:
+        db.enable_load_extension(True)
+        sqlite_vec.load(db)
+        db.enable_load_extension(False)
+        return True
+    except Exception:
+        return False
+
+
+def serialize_vector_f32(vector: list[float]) -> bytes:
+    """Pack a list of float values into a raw binary float32 buffer for sqlite-vec."""
+    if sqlite_vec is not None and hasattr(sqlite_vec, "serialize_float32"):
+        try:
+            return sqlite_vec.serialize_float32(vector)
+        except Exception:
+            pass
+    return struct.pack(f"{len(vector)}f", *(float(x) for x in vector))
