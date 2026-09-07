@@ -57,6 +57,8 @@ hidden_imports = [
     'project_intelligence',
     'syntax_chunker',
     'approval_policy',
+    'hindsight_manager',
+    'hindsight_client',
     'sqlite3',
     'sqlite_vec',
     'winpty',
