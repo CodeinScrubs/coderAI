@@ -4,8 +4,10 @@ context_builder.py - RAG context, prompt building, and token estimation helpers.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
+import re
 from typing import Any, Callable
 
 
@@ -65,6 +67,179 @@ def compact_tool_output(content: str, max_chars: int = 1500, tool_name: str = ""
     return clip_for_context(content, max_chars)
 
 
+def extract_code_outline(code: str, file_path: str = "") -> str:
+    """Extracts a structural symbol outline (classes, functions, methods, line numbers) to conserve context tokens."""
+    if not code:
+        return "[Empty file]"
+
+    lines = code.splitlines()
+    total_lines = len(lines)
+    is_python = file_path.endswith(".py") or "def " in code or "class " in code
+
+    symbols: list[str] = []
+
+    if is_python:
+        try:
+            tree = ast.parse(code)
+            for node in tree.body:
+                if isinstance(node, ast.ClassDef):
+                    symbols.append(f"Line {node.lineno}: class {node.name}")
+                    for item in node.body:
+                        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            args = [a.arg for a in item.args.args]
+                            symbols.append(f"  Line {item.lineno}: def {item.name}({', '.join(args)})")
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    args = [a.arg for a in node.args.args]
+                    symbols.append(f"Line {node.lineno}: def {node.name}({', '.join(args)})")
+        except Exception:
+            pass
+
+    if not symbols:
+        # Generic / JS / TS regex fallback
+        for i, line in enumerate(lines, 1):
+            stripped = line.strip()
+            # Python def / class fallback
+            m = re.match(r"^(class\s+[a-zA-Z0-9_]+(?:\([^)]*\))?):", stripped)
+            if m:
+                symbols.append(f"Line {i}: {m.group(1)}")
+                continue
+            m = re.match(r"^((?:async\s+)?def\s+[a-zA-Z0-9_]+\([^)]*\)):", stripped)
+            if m:
+                indent = "  " if line.startswith(("    ", "\t")) else ""
+                symbols.append(f"{indent}Line {i}: {m.group(1)}")
+                continue
+            # JS / TS class, function, arrow
+            m = re.match(r"^(?:export\s+)?(?:default\s+)?class\s+([a-zA-Z0-9_]+)", stripped)
+            if m:
+                symbols.append(f"Line {i}: class {m.group(1)}")
+                continue
+            m = re.match(r"^(?:export\s+)?(?:async\s+)?function\s+([a-zA-Z0-9_]+)\s*(\([^)]*\))", stripped)
+            if m:
+                symbols.append(f"Line {i}: function {m.group(1)}{m.group(2)}")
+                continue
+            m = re.match(r"^(?:export\s+)?(?:const|let|var)\s+([a-zA-Z0-9_]+)\s*=\s*(?:async\s*)?(\([^)]*\)|[a-zA-Z0-9_]+)\s*=>", stripped)
+            if m:
+                symbols.append(f"Line {i}: const {m.group(1)} = (...) =>")
+                continue
+            # JS / TS method
+            m = re.match(r"^(?:async\s+)?([a-zA-Z0-9_]+)\s*(\([^)]*\))\s*\{?", stripped)
+            if m and m.group(1) not in {"if", "for", "while", "switch", "catch", "return"}:
+                prefix = "async " if stripped.startswith("async ") else ""
+                symbols.append(f"Line {i}: {prefix}{m.group(1)}{m.group(2)}")
+                continue
+            # Rust / Go
+            m = re.match(r"^(?:pub\s+)?(?:fn|func)\s+([a-zA-Z0-9_]+)", stripped)
+            if m:
+                symbols.append(f"Line {i}: {stripped[:60]}")
+                continue
+
+    header = f"[Structural Outline: {file_path or 'Source Code'} ({total_lines} lines)]"
+    if not symbols:
+        preview = "\n".join(lines[:15])
+        return f"{header}\n(No major class/function declarations detected. Head preview):\n{preview}"
+
+    return header + "\n" + "\n".join(symbols)
+
+
+def compress_source_code(code: str, mode: str = "clean") -> str:
+    """
+    Compresses source code to reduce token consumption inspired by LeanCTX:
+    - 'outline' / 'map': returns structural symbol signatures and line numbers.
+    - 'clean' / 'aggressive': strips comments, redundant whitespace, and blank lines.
+    - 'lightweight': collapses consecutive blank lines.
+    - 'raw': unchanged.
+    """
+    if not code:
+        return code
+    mode_str = str(mode or "clean").lower()
+    if mode_str in {"outline", "map"}:
+        return extract_code_outline(code)
+    if mode_str in {"clean", "aggressive"}:
+        lines = []
+        in_multiline_comment = False
+        for raw_line in code.splitlines():
+            line = raw_line.rstrip()
+            stripped = line.strip()
+            # C-style multiline comments
+            if in_multiline_comment:
+                if "*/" in stripped:
+                    in_multiline_comment = False
+                continue
+            if stripped.startswith("/*"):
+                if "*/" not in stripped:
+                    in_multiline_comment = True
+                continue
+            # Single-line comments (# or //)
+            if stripped.startswith("#") or stripped.startswith("//"):
+                continue
+            # Keep non-empty lines
+            if stripped:
+                lines.append(line)
+            elif lines and lines[-1] != "":
+                lines.append("")
+        return "\n".join(lines)
+    if mode_str == "lightweight":
+        lines = []
+        for line in code.splitlines():
+            stripped = line.strip()
+            if stripped:
+                lines.append(line.rstrip())
+            elif lines and lines[-1] != "":
+                lines.append("")
+        return "\n".join(lines)
+    return code
+
+
+def compact_history_assistant_turns(
+    messages: list[dict],
+    keep_recent_assistant_code: int = 1,
+    min_lines_to_collapse: int = 6,
+) -> list[dict]:
+    """
+    In older assistant turns, collapses voluminous code blocks into compact stubs.
+    Preserves full code in the most recent assistant turns.
+    Prevents exponential token growth across multiple turns.
+    """
+    if not messages:
+        return []
+
+    # Find indices of assistant messages
+    assistant_indices = [idx for idx, msg in enumerate(messages) if msg.get("role") == "assistant"]
+    keep_set = set(assistant_indices[-keep_recent_assistant_code:]) if assistant_indices else set()
+
+    result = []
+    for idx, msg in enumerate(messages):
+        if msg.get("role") != "assistant" or idx in keep_set:
+            result.append(msg)
+            continue
+
+        content = str(msg.get("content") or "")
+
+        def _collapse_code_block(match: re.Match) -> str:
+            lang = match.group(1) or ""
+            body = match.group(2)
+            lines = body.strip().splitlines()
+            if len(lines) <= min_lines_to_collapse:
+                return match.group(0)
+            first_two = "\n".join(lines[:2])
+            return (
+                f"```{lang}\n{first_two}\n"
+                f"... [{len(lines) - 2} lines of {lang or 'code'} collapsed to save tokens. Current state is in workspace.]\n```"
+            )
+
+        compacted_content = re.sub(
+            r"```([a-zA-Z0-9_\-\.]*)\n([\s\S]*?)```",
+            _collapse_code_block,
+            content,
+        )
+
+        copy_msg = dict(msg)
+        copy_msg["content"] = compacted_content
+        result.append(copy_msg)
+
+    return result
+
+
 def adaptive_compact_messages(
     messages: list[dict],
     token_budget: int = DEFAULT_CONTEXT_TOKEN_BUDGET,
@@ -74,6 +249,9 @@ def adaptive_compact_messages(
     """Adaptively compacts tool outputs and older turns to stay well within token_budget."""
     if not messages:
         return []
+
+    # First collapse older assistant code blocks to reclaim massive token overhead
+    messages = compact_history_assistant_turns(messages, keep_recent_assistant_code=1)
 
     compacted: list[dict] = []
     total_messages = len(messages)

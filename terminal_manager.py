@@ -12,6 +12,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+import re
 from typing import Generator
 
 try:
@@ -19,6 +20,10 @@ try:
     HAS_WINPTY = True
 except Exception:
     HAS_WINPTY = False
+
+# Strip VT device attribute queries and unsolicited capability probes
+# that trigger xterm to send stdin keystrokes (like ?1;2c) back to the shell.
+VT_QUERY_FILTER = re.compile(r"\x1b\[c|\x1b\[\?1004[hl]|\x1b\[\?9001[hl]|\x1b\[[12]t")
 
 
 class TerminalSession:
@@ -40,12 +45,38 @@ class TerminalSession:
         self.pty_proc: winpty.PtyProcess | None = None
         self.active_process: subprocess.Popen | None = None
         self.output_queue: queue.Queue[dict] = queue.Queue()
+        self._subscribers: set[queue.Queue] = set()
+        self._subscribers_lock = threading.Lock()
+        self.output_buffer: list[str] = []
+        self._buffer_lock = threading.Lock()
         self.history: list[str] = []
         self._lock = threading.Lock()
         self._is_running = False
         self._reader_thread: threading.Thread | None = None
 
         self.start_shell()
+
+    def subscribe(self) -> queue.Queue:
+        q: queue.Queue = queue.Queue()
+        with self._subscribers_lock:
+            self._subscribers.add(q)
+        return q
+
+    def unsubscribe(self, q: queue.Queue) -> None:
+        with self._subscribers_lock:
+            self._subscribers.discard(q)
+
+    def _broadcast(self, item: dict) -> None:
+        self.output_queue.put(item)
+        with self._subscribers_lock:
+            dead = []
+            for q in self._subscribers:
+                try:
+                    q.put_nowait(item)
+                except Exception:
+                    dead.append(q)
+            for d in dead:
+                self._subscribers.discard(d)
 
     def get_shell_command_args(self) -> list[str]:
         if self.shell_type in {"cmd", "command prompt", "cmd.exe"}:
@@ -114,7 +145,13 @@ class TerminalSession:
             try:
                 data = proc.read()
                 if data:
-                    self.output_queue.put({"type": "raw", "data": data, "text": data})
+                    clean = VT_QUERY_FILTER.sub("", data)
+                    if clean:
+                        self._broadcast({"type": "raw", "data": clean, "text": clean})
+                        with self._buffer_lock:
+                            self.output_buffer.append(clean)
+                            if len(self.output_buffer) > 1000:
+                                self.output_buffer.pop(0)
                 else:
                     time.sleep(0.01)
             except EOFError:
@@ -149,12 +186,22 @@ class TerminalSession:
                     except Exception:
                         break
                 data = "".join(buf)
-                self.output_queue.put({"type": "raw", "data": data, "text": data})
+                clean = VT_QUERY_FILTER.sub("", data)
+                if clean:
+                    self._broadcast({"type": "raw", "data": clean, "text": clean})
+                    with self._buffer_lock:
+                        self.output_buffer.append(clean)
+                        if len(self.output_buffer) > 1000:
+                            self.output_buffer.pop(0)
         except Exception as exc:
-            self.output_queue.put({"type": "output", "text": f"\r\n[Read error: {exc}]\r\n", "data": f"\r\n[Read error: {exc}]\r\n"})
+            self._broadcast({"type": "output", "text": f"\r\n[Read error: {exc}]\r\n", "data": f"\r\n[Read error: {exc}]\r\n"})
         finally:
             with self._lock:
                 self._is_running = False
+
+    def get_output_history(self) -> str:
+        with self._buffer_lock:
+            return "".join(self.output_buffer)
 
     def write(self, data: str) -> None:
         with self._lock:

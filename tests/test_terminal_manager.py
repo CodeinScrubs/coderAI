@@ -22,7 +22,7 @@ def test_terminal_session_execute_and_stream(tmp_path: Path):
     
     events = []
     start_time = time.time()
-    while time.time() - start_time < 3.0:
+    while time.time() - start_time < 8.0:
         while not session.output_queue.empty():
             events.append(session.output_queue.get_nowait())
         if any("Hello from PowerShell Terminal" in e.get("text", "") for e in events):

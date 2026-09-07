@@ -61,6 +61,12 @@ def create_app() -> FastAPI:
         sid = request.headers.get("x-session-id") or request.query_params.get("session_id")
         return web_app._client_state(sid)
 
+    @app.get("/api/hindsight/status")
+    async def get_hindsight_status():
+        from hindsight_manager import get_hindsight_manager
+        hm = get_hindsight_manager()
+        return hm.get_status()
+
     @app.post("/api/settings")
     async def save_settings(request: Request):
         data = await request.json()
@@ -715,16 +721,47 @@ def create_app() -> FastAPI:
         ws_cwd = get_workspace()
         session = terminal_manager.get_or_create_session(session_id, shell_type=shell, cwd=ws_cwd)
 
+        sub_queue = session.subscribe()
+        ws_lock = asyncio.Lock()
+
+        async def safe_send(text: str) -> None:
+            if not text:
+                return
+            async with ws_lock:
+                try:
+                    await websocket.send_text(text)
+                except Exception:
+                    pass
+
+        # Replay buffered output history if any, clearing xterm screen first
+        history = session.get_output_history()
+        if history:
+            await safe_send("\x1b[2J\x1b[H" + history)
+
         loop = asyncio.get_running_loop()
+
+        def _get_batch_output():
+            items = []
+            try:
+                first = sub_queue.get(timeout=0.20)
+                items.append(first)
+                while not sub_queue.empty() and len(items) < 100:
+                    try:
+                        items.append(sub_queue.get_nowait())
+                    except queue.Empty:
+                        break
+            except queue.Empty:
+                pass
+            return items
 
         async def send_terminal_output():
             while True:
                 try:
-                    event = await loop.run_in_executor(None, session.output_queue.get)
-                    if event:
-                        text = event.get("data") or event.get("text", "")
-                        if text:
-                            await websocket.send_text(text)
+                    events = await loop.run_in_executor(None, _get_batch_output)
+                    if events:
+                        combined = "".join((e.get("data") or e.get("text", "")) for e in events if e)
+                        if combined:
+                            await safe_send(combined)
                 except asyncio.CancelledError:
                     break
                 except Exception:
@@ -740,26 +777,41 @@ def create_app() -> FastAPI:
                     if isinstance(data, dict):
                         mtype = data.get("type")
                         if mtype == "input":
-                            session.write(data.get("data", ""))
-                            continue
+                            raw_input = data.get("data", "")
+                            # Protect against unsolicited escape echoes
+                            if raw_input and not (raw_input.startswith("\x1b[?") and raw_input.endswith("c")):
+                                session.write(raw_input)
                         elif mtype == "resize":
-                            session.resize(int(data.get("rows", 24)), int(data.get("cols", 80)))
-                            continue
+                            try:
+                                rows = data.get("rows")
+                                cols = data.get("cols")
+                                r_val = int(rows) if rows is not None and str(rows).isdigit() else 24
+                                c_val = int(cols) if cols is not None and str(cols).isdigit() else 80
+                                session.resize(r_val, c_val)
+                            except Exception:
+                                pass
                         elif mtype == "restart":
                             session.restart(data.get("shell", session.shell_type))
-                            continue
                         elif mtype == "kill":
                             session.kill()
-                            continue
+                        elif mtype == "ping":
+                            await safe_send(json.dumps({"type": "pong"}))
+                        continue
                 except Exception:
                     pass
-                session.write(msg)
+                if not msg.startswith("{"):
+                    session.write(msg)
         except WebSocketDisconnect:
             pass
         except Exception:
             pass
         finally:
+            session.unsubscribe(sub_queue)
             sender_task.cancel()
+            try:
+                await sender_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
     @app.get("/api/terminal/stream")
     async def terminal_stream(request: Request):

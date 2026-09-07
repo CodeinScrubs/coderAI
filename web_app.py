@@ -46,6 +46,7 @@ from context_builder import (
     clip_for_context, estimate_tokens_for_messages, estimate_tokens_for_text,
     fast_tokens_for_messages, get_model_context_window, message_summary_line,
     adaptive_compact_messages, compact_tool_output,
+    extract_code_outline, compact_history_assistant_turns,
 )
 from tool_parser import repair_json_tool_arguments, extract_fallback_tool_calls_from_text
 from session_manager import SessionStore, build_project_cards
@@ -946,15 +947,26 @@ def _build_workspace_context(active_context: dict | None = None) -> str:
                     "Do not return only a patch, excerpt, or explanation when the user asks for a code change.",
                     "Keep any prose short and separate from the fenced code block.",
                 ]
+                body = _clip_for_context(content, 18_000)
             else:
                 lines += [
                     "The user's next request is about this file unless they explicitly say otherwise.",
                     "Use `write_file` or `replace_in_file` to apply requested changes to this path when appropriate.",
                 ]
+                if len(content) <= 3000 and content.count("\n") <= 100:
+                    body = _clip_for_context(content, 18_000)
+                else:
+                    outline = extract_code_outline(content, file_path=path)
+                    total_lines = content.count("\n") + 1
+                    body = (
+                        f"/* STRUCTURAL CODE OUTLINE ({total_lines} lines, {len(content)} chars) */\n"
+                        f"/* Use `read_file(path=\"{path}\", start_line=..., end_line=...)` to view exact implementation details */\n\n"
+                        f"{outline}"
+                    )
             lines += [
                 "",
                 f"```{active_context.get('info') or ''}".rstrip(),
-                _clip_for_context(content, 18_000),
+                body,
                 "```",
             ]
     return "\n".join(lines)
@@ -981,7 +993,8 @@ def _build_api_messages(final_system: str, compact: bool = True) -> list[dict]:
     used = 0
 
     recent = STATE["messages"][-MAX_KEPT_HISTORY_MESSAGES:]
-    for message in reversed(recent):
+    compacted_recent = compact_history_assistant_turns(recent, keep_recent_assistant_code=1)
+    for message in reversed(compacted_recent):
         compact = _message_for_context(message)
         size = len(compact["content"]) + 32
         if selected_reversed and used + size > budget:
@@ -1006,6 +1019,28 @@ def _build_api_messages(final_system: str, compact: bool = True) -> list[dict]:
             "role": "system",
             "content": f"[Context note: {omitted} older chat message(s) were omitted to stay within the model context window.]",
         })
+
+    # Proactive Hindsight Memory Recall for current project
+    try:
+        from hindsight_manager import get_hindsight_manager
+        hm = get_hindsight_manager()
+        if hm.is_available():
+            last_user_msg = next((m.get("content", "") for m in reversed(STATE["messages"]) if m.get("role") == "user"), "")
+            if last_user_msg:
+                h_rec = hm.recall(query=last_user_msg[:250], max_tokens=600)
+                p_str = h_rec.get("prompt_string", "").strip()
+                if p_str:
+                    selected.insert(0, {
+                        "role": "system",
+                        "content": (
+                            f"[Hindsight Long-Term Memory (bank: {h_rec.get('bank_id')})]\n"
+                            f"{p_str}\n\n"
+                            "Use these learned project facts and lessons to inform your actions."
+                        ),
+                    })
+    except Exception:
+        pass
+
     return [{"role": "system", "content": final_system}] + selected
 
 

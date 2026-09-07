@@ -247,11 +247,14 @@ TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read a text file from the active workspace.",
+            "description": "Read a text file from the active workspace. Supports LeanCTX surgical windowing (start_line, end_line) and compression modes ('raw', 'clean', 'outline') to conserve tokens.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "File path relative to the workspace"}
+                    "path": {"type": "string", "description": "File path relative to the workspace"},
+                    "start_line": {"type": "integer", "description": "Optional starting line number (1-indexed)"},
+                    "end_line": {"type": "integer", "description": "Optional ending line number (1-indexed)"},
+                    "mode": {"type": "string", "enum": ["raw", "clean", "outline"], "description": "Reading mode: 'raw' (default), 'clean' (strips comments/blank lines), or 'outline' (structural class/function signatures with line numbers)"}
                 },
                 "required": ["path"],
             },
@@ -553,6 +556,66 @@ TOOL_SCHEMAS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "remember_fact",
+            "description": "Store an important fact, architectural decision, user preference, or bug solution into long-term project memory (Hindsight).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "The information, observation, or lesson to retain.",
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "Optional context or category (e.g. 'architecture', 'user_preference', 'bug_fix').",
+                    },
+                },
+                "required": ["content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "recall_memory",
+            "description": "Search long-term project memories, previous decisions, and past experiences using hybrid retrieval.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query or concept to recall.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of memories to recall (default 5).",
+                        "default": 5,
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "reflect_memory",
+            "description": "Synthesize patterns, risks, or deep conclusions from the project's cumulative memory (Hindsight reflection).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The question or topic to reflect upon (e.g. 'What are the main architectural patterns in this project?').",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
 ]
 
 
@@ -618,14 +681,47 @@ def _tavily_post(endpoint: str, payload: dict) -> dict:
 # ── Tool Handlers
 # ══════════════════════════════════════════════════════════════════════════════
 
-def tool_read_file(path: str) -> str:
+def tool_read_file(
+    path: str,
+    start_line: int | None = None,
+    end_line: int | None = None,
+    mode: str = "raw",
+) -> str:
     try:
         p = _safe_path(path)
         if not p.exists():
             return f"File does not exist: {path}"
         content = p.read_text(encoding="utf-8", errors="replace")
+
+        # LeanCTX outline/map mode
+        mode_str = str(mode or "raw").lower()
+        if mode_str in {"outline", "map"}:
+            from context_builder import extract_code_outline
+            return extract_code_outline(content, file_path=path)
+
+        # LeanCTX clean/aggressive mode (strips comments and redundant whitespace)
+        if mode_str in {"clean", "aggressive"}:
+            from context_builder import compress_source_code
+            content = compress_source_code(content, mode="clean")
+
+        lines = content.splitlines()
+        total_lines = len(lines)
+
+        # Surgical line windowing
+        if start_line is not None or end_line is not None:
+            s = max(1, int(start_line or 1))
+            e = min(total_lines, int(end_line or total_lines))
+            if s > total_lines:
+                return f"Requested start_line {s} exceeds total lines ({total_lines}) in {path}."
+            selected = lines[s - 1:e]
+            numbered = [f"{i}: {line}" for i, line in enumerate(selected, s)]
+            result = f"--- {path} (lines {s}-{e} of {total_lines}) ---\n" + "\n".join(numbered)
+            if len(result) > MAX_OUTPUT_CHARS:
+                result = result[:MAX_OUTPUT_CHARS] + f"\n\n... [truncated - {len(result)} characters]"
+            return result
+
         if len(content) > MAX_OUTPUT_CHARS:
-            content = content[:MAX_OUTPUT_CHARS] + f"\n\n... [truncated - {len(content)} total characters]"
+            content = content[:MAX_OUTPUT_CHARS] + f"\n\n... [truncated - {len(content)} total characters. Use start_line/end_line for surgical reading]"
         return content
     except Exception as e:
         return f"Error: {e}"
@@ -1163,9 +1259,47 @@ def tool_scan_project(max_files: int = 200) -> str:
     return "\n".join(lines)
 
 
+def tool_remember_fact(content: str, context: str = "") -> str:
+    """Retain a key observation, rule, or architectural fact into long-term Hindsight memory."""
+    try:
+        from hindsight_manager import get_hindsight_manager
+        hm = get_hindsight_manager()
+        res = hm.retain(content=content, context=context)
+        bank_id = res.get("bank_id", "default")
+        if res.get("engine") == "hindsight":
+            return f"Retained in Hindsight memory bank '{bank_id}': {content}"
+        return f"Retained in local memory store (bank '{bank_id}'): {content}"
+    except Exception as e:
+        return f"Error storing memory: {e}"
+
+
+def tool_recall_memory(query: str, limit: int = 5) -> str:
+    """Recall relevant project memories, facts, and lessons using Hindsight hybrid search."""
+    try:
+        from hindsight_manager import get_hindsight_manager
+        hm = get_hindsight_manager()
+        res = hm.recall(query=query, max_tokens=2048)
+        p_str = res.get("prompt_string", "")
+        if p_str:
+            return f"--- Recalled Memories ({res.get('engine')}, {res.get('count')} item(s)) ---\n{p_str}"
+        return f"No memories found for query: '{query}'."
+    except Exception as e:
+        return f"Error recalling memory: {e}"
+
+
+def tool_reflect_memory(query: str) -> str:
+    """Synthesize deep lessons and project patterns using Hindsight reflection."""
+    try:
+        from hindsight_manager import get_hindsight_manager
+        hm = get_hindsight_manager()
+        return hm.reflect(query=query)
+    except Exception as e:
+        return f"Error reflecting on memory: {e}"
+
+
 # ── Dispatcher ─────────────────────────────────────────────────────────────────
 _HANDLERS: dict = {
-    "read_file":    lambda a: tool_read_file(a["path"]),
+    "read_file":    lambda a: tool_read_file(a["path"], a.get("start_line"), a.get("end_line"), a.get("mode", "raw")),
     "write_file":   lambda a: tool_write_file(a["path"], a["content"]),
     "list_files":   lambda a: tool_list_files(a.get("pattern", "**/*")),
     "run_bash":     lambda a: tool_run_bash(a["command"]),
@@ -1185,6 +1319,9 @@ _HANDLERS: dict = {
     "get_project_overview": lambda a: tool_get_project_overview(),
     "get_related_files": lambda a: tool_get_related_files(a["path"], a.get("depth", 1)),
     "scan_project": lambda a: tool_scan_project(a.get("max_files", 200)),
+    "remember_fact":  lambda a: tool_remember_fact(a["content"], a.get("context", "")),
+    "recall_memory":  lambda a: tool_recall_memory(a["query"], a.get("limit", 5)),
+    "reflect_memory": lambda a: tool_reflect_memory(a["query"]),
 }
 
 

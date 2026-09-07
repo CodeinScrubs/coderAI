@@ -41,8 +41,19 @@ The folder-based package may start faster and is usually better for future insta
 - **Streamlined Two-Button Sidebar Controls**: Clean topbar layout toggles for Left Workspace & Options (`Ctrl+B`) and Right Chat & Agent (`Ctrl+J`).
 - **Thread-Safe Backend & Direct NDJSON Streaming**: `STATE_LOCK` protected state management, fast streaming over `/api/chat_stream`, and detailed HTTP error decoding for Ollama model runtime diagnostics.
 - **Incremental Codebase RAG**: Structural AST chunking, hierarchical summaries, hybrid BM25 + vector search, and dependency graph routing.
+- **LeanCTX-Inspired Token Compression & Structural Outline**:
+  - Prevents token bloat across long multi-turn sessions using AST-powered structural code outlines (`extract_code_outline`).
+  - Active editor file compaction: large open files (>3,000 chars) are injected as compact structural outlines with line numbers rather than full 18,000-character dumps.
+  - History code compaction: older assistant turns with large code blocks are automatically collapsed in conversation context while preserving the latest turn.
+  - Surgical line windowing in `read_file` with `start_line`, `end_line`, and compression modes (`raw`, `clean`, `outline`).
+- **Vectorize Hindsight Deep Long-Term Memory (Biomimetic SOTA Memory)**:
+  - Integration with the [Vectorize Hindsight](https://github.com/vectorize-io/hindsight) memory engine for continuous learning across sessions.
+  - Workspace-scoped memory banks (`ws_<project_name>`) keeping project lessons, user preferences, and architectural decisions isolated and durable.
+  - Exposes 3 agent memory tools: `remember_fact` (`retain`), `recall_memory` (4-way hybrid retrieval: vector + BM25 + graph + temporal), and `reflect_memory` (deep synthesis and pattern extraction).
+  - Proactive prompt enrichment: automatically recalls relevant project facts for incoming queries.
+  - Resilient dual fallback: seamlessly falls back to local SQLite memory store when the Hindsight server is offline.
 - **Git-backed Agent Checkpoints**: Reviewable diff previews before file edits, scoped commits, history tracking, and one-click rollback.
-- **Remote Git Integration**: Streamed cloning, SSH/PAT authentication, branch push previews, and explicit approval before publishing.
+- **Remote Git Integration**: Streamed cloning, SSH/PAT authentication, branch switching, fetch, pull, push previews, and merge-conflict assistance.
 - **Agent Sandbox & Security**: Safe tool execution boundaries, per-tool approval flows, and local Docker/subprocess sandboxing.
 
 ## Project Structure
@@ -55,6 +66,8 @@ The folder-based package may start faster and is usually better for future insta
 ├── agent_runtime.py            # LangChain model runtime adapter
 ├── launcher.py                 # EXE-friendly launcher that opens the browser
 ├── tools.py                    # Tool schemas and tool execution handlers
+├── context_builder.py          # LeanCTX prompt compressor, AST outlines, and token budget manager
+├── hindsight_manager.py        # Vectorize Hindsight client adapter, bank scoping, and local fallback
 ├── git_manager.py              # Git clone, diff, checkpoint, commit, push, and revert layer
 ├── memory_graph.py             # Embedded Knowledge Graph (KG-RAG) memory subsystem
 ├── memory_manager.py           # SQLite episodic, semantic, and procedural memory
@@ -245,16 +258,18 @@ Virtual environments and dependency directories are pruned before traversal. Fol
 
 The Windows portable executable includes the built-in Ollama HTTP runtime, SQLite/FTS5 indexing, project dependency graphs, persistent memory, Git integration, and the complete web UI. Optional Python integrations are used when bundled in a build; otherwise the application falls back to its built-in runtime and SQLite retrieval. Ollama itself remains a separate local application and must be running when Local Ollama mode is selected.
 
-## TODO
+## Features & Roadmap Status
 
-- Add per-tool and per-workspace approval policies.
-- Add pull, fetch, branch switching, and merge-conflict assistance to Git History.
-- Add tree-sitter structural chunking for JavaScript, TypeScript, Java, and additional languages.
-- Add richer skill validation, diagnostics, and execution traces.
-- Add optional `sqlite-vec` acceleration for the SQLite semantic fallback.
-- Add opt-in background fact extraction with review before facts become durable memory.
-- Add end-to-end browser tests for clone, diff approval, checkpoint, revert, and push flows.
-- Automate signed Windows release builds and GitHub Release publishing.
+- [x] Per-tool and per-workspace approval policies (`approval_policy.py`).
+- [x] Pull, fetch, branch switching, and merge-conflict assistance in Git History.
+- [x] Optional `sqlite-vec` acceleration for the SQLite semantic fallback.
+- [x] LeanCTX-inspired token compression, structural AST code outlining, and history code compaction.
+- [x] Vectorize Hindsight biomimetic long-term memory integration with workspace-scoped banks and dual fallback.
+- [ ] Add tree-sitter structural chunking for JavaScript, TypeScript, Java, and additional languages.
+- [ ] Add richer skill validation, diagnostics, and execution traces.
+- [ ] Add opt-in background fact extraction with review before facts become durable memory.
+- [ ] Add end-to-end browser tests for clone, diff approval, checkpoint, revert, and push flows.
+- [ ] Automate signed Windows release builds and GitHub Release publishing.
 
 ## License
 
