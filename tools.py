@@ -616,6 +616,92 @@ TOOL_SCHEMAS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_project_architecture",
+            "description": "Get high-level module architecture, community clusters, and key entry points from the code review graph. Ideal for large projects to understand structural organization without token waste.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "detail_level": {
+                        "type": "string",
+                        "enum": ["minimal", "standard", "detailed"],
+                        "description": "Detail level of the architecture overview (default: 'minimal').",
+                        "default": "minimal",
+                    }
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_impact_radius",
+            "description": "Calculate the blast radius of proposed or actual file changes. Traces all callers, dependents, and affected unit tests across folders before editing code.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "files": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of relative file paths to check for blast radius.",
+                    },
+                    "max_depth": {
+                        "type": "integer",
+                        "description": "Maximum call-chain traversal depth (default 2).",
+                        "default": 2,
+                    },
+                },
+                "required": ["files"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_code_graph",
+            "description": "Query AST structural relationships in the codebase graph across all directories. Pattern options: 'calls' (what does target call), 'callers' (who calls target), 'imports', 'dependencies', or 'extended_by'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "enum": ["calls", "callers", "imports", "dependencies", "extended_by"],
+                        "description": "Query pattern: 'calls', 'callers', 'imports', 'dependencies', or 'extended_by'.",
+                    },
+                    "symbol": {
+                        "type": "string",
+                        "description": "Target function name, class name, or file path to inspect.",
+                    },
+                },
+                "required": ["pattern", "symbol"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_code_review_context",
+            "description": "Extract a token-optimized focused subgraph slice for a review task or set of changed files, providing caller context without reading whole files.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "description": "Description of the task or review goal.",
+                    },
+                    "files": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of changed file paths.",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
 ]
 
 
@@ -1256,6 +1342,13 @@ def tool_scan_project(max_files: int = 200) -> str:
     if len(all_files) > max_files:
         lines.append(f"\n_(Showing only the first {max_files} files out of {len(all_files)} total.)_")
 
+    try:
+        from code_graph_service import code_graph_service
+        if code_graph_service.is_available:
+            threading.Thread(target=code_graph_service.build_or_update, args=(ws,), daemon=True).start()
+    except Exception:
+        pass
+
     return "\n".join(lines)
 
 
@@ -1297,6 +1390,54 @@ def tool_reflect_memory(query: str) -> str:
         return f"Error reflecting on memory: {e}"
 
 
+def tool_get_project_architecture(detail_level: str = "minimal") -> str:
+    """Get high-level module architecture and community clusters using code-review-graph."""
+    try:
+        from code_graph_service import code_graph_service
+        res = code_graph_service.get_architecture_overview(get_workspace(), detail_level=detail_level)
+        if not res.get("ok"):
+            return f"Architecture overview unavailable: {res.get('error', 'unknown error')}"
+        return json.dumps(res.get("data", {}), indent=2)
+    except Exception as exc:
+        return f"Error getting project architecture: {exc}"
+
+
+def tool_get_impact_radius(files: list[str], max_depth: int = 2) -> str:
+    """Calculate blast radius across folders for changed or targeted files."""
+    try:
+        from code_graph_service import code_graph_service
+        res = code_graph_service.get_impact_radius(get_workspace(), changed_files=files, max_depth=max_depth)
+        if not res.get("ok"):
+            return f"Impact radius unavailable: {res.get('error', 'unknown error')}"
+        return json.dumps(res.get("data", {}), indent=2)
+    except Exception as exc:
+        return f"Error calculating impact radius: {exc}"
+
+
+def tool_query_code_graph(pattern: str, symbol: str) -> str:
+    """Query AST call graphs, callers, imports, or dependencies."""
+    try:
+        from code_graph_service import code_graph_service
+        res = code_graph_service.query_graph(pattern=pattern, target=symbol, workspace_path=get_workspace())
+        if not res.get("ok"):
+            return f"Graph query failed: {res.get('error', 'unknown error')}"
+        return json.dumps(res.get("data", {}), indent=2)
+    except Exception as exc:
+        return f"Error querying code graph: {exc}"
+
+
+def tool_get_code_review_context(task: str = "", files: list[str] | None = None) -> str:
+    """Extract a token-optimized focused subgraph slice for a review task."""
+    try:
+        from code_graph_service import code_graph_service
+        res = code_graph_service.get_minimal_context(get_workspace(), task=task, changed_files=files)
+        if not res.get("ok"):
+            return f"Code review context unavailable: {res.get('error', 'unknown error')}"
+        return json.dumps(res.get("data", {}), indent=2)
+    except Exception as exc:
+        return f"Error getting code review context: {exc}"
+
+
 # ── Dispatcher ─────────────────────────────────────────────────────────────────
 _HANDLERS: dict = {
     "read_file":    lambda a: tool_read_file(a["path"], a.get("start_line"), a.get("end_line"), a.get("mode", "raw")),
@@ -1322,6 +1463,10 @@ _HANDLERS: dict = {
     "remember_fact":  lambda a: tool_remember_fact(a["content"], a.get("context", "")),
     "recall_memory":  lambda a: tool_recall_memory(a["query"], a.get("limit", 5)),
     "reflect_memory": lambda a: tool_reflect_memory(a["query"]),
+    "get_project_architecture": lambda a: tool_get_project_architecture(a.get("detail_level", "minimal")),
+    "get_impact_radius": lambda a: tool_get_impact_radius(a.get("files", []), a.get("max_depth", 2)),
+    "query_code_graph": lambda a: tool_query_code_graph(a["pattern"], a["symbol"]),
+    "get_code_review_context": lambda a: tool_get_code_review_context(a.get("task", ""), a.get("files")),
 }
 
 

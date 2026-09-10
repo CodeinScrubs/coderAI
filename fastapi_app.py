@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 
 import web_app
 from codebase_index import CodebaseIndex
+from code_graph_service import code_graph_service
 from terminal_manager import terminal_manager
 from tools import cancel_current_execution, get_workspace, set_workspace
 from vector_store import EmbeddingModelManager
@@ -553,6 +554,35 @@ def create_app() -> FastAPI:
     async def get_index_overview():
         index = web_app.CodebaseIndex(web_app.get_workspace())
         return {"overview": index.get_project_overview(), "graph": index.dependency_tree()}
+
+    @app.get("/api/graph/overview")
+    async def get_graph_overview(request: Request):
+        detail = request.query_params.get("detail", "minimal")
+        ws = request.query_params.get("workspace_path") or get_workspace()
+        res = code_graph_service.get_architecture_overview(ws, detail_level=detail)
+        return res
+
+    @app.post("/api/graph/impact")
+    async def get_graph_impact(request: Request):
+        data = await request.json() if request.headers.get("content-type") == "application/json" else {}
+        files = data.get("files", []) or data.get("changed_files", [])
+        depth = data.get("depth", 2) or data.get("max_depth", 2)
+        ws = data.get("workspace_path") or get_workspace()
+        res = code_graph_service.get_impact_radius(ws, changed_files=files, max_depth=depth)
+        return res
+
+    @app.post("/api/graph/build")
+    async def build_graph(request: Request):
+        data = await request.json() if request.headers.get("content-type") == "application/json" else {}
+        full = data.get("full_rebuild", False)
+        ws = data.get("workspace_path") or get_workspace()
+        res = code_graph_service.build_or_update(ws, full_rebuild=full)
+        return res
+
+    @app.get("/api/graph/stats")
+    async def get_graph_stats(request: Request):
+        ws = request.query_params.get("workspace_path") or get_workspace()
+        return code_graph_service.get_stats(ws)
 
     @app.get("/api/browse")
     @app.post("/api/browse")

@@ -52,6 +52,12 @@ The folder-based package may start faster and is usually better for future insta
   - Exposes 3 agent memory tools: `remember_fact` (`retain`), `recall_memory` (4-way hybrid retrieval: vector + BM25 + graph + temporal), and `reflect_memory` (deep synthesis and pattern extraction).
   - Proactive prompt enrichment: automatically recalls relevant project facts for incoming queries.
   - Resilient dual fallback: seamlessly falls back to local SQLite memory store when the Hindsight server is offline.
+- **Large-Scale Multi-Folder Repository Intelligence ([code-review-graph](https://github.com/tirth8205/code-review-graph))**:
+  - Deep Tree-sitter AST and SQLite call graph indexing across Python, TypeScript, JavaScript, Rust, Go, Java, C/C++, C#, Kotlin, Ruby, and PHP.
+  - Multi-hop **blast radius analysis** (`get_impact_radius`): traces all downstream callers, dependents, and tests before modifying code across folders.
+  - **Hierarchical architecture clustering** (`get_project_architecture`): Leiden community detection partitions multi-folder codebases into high-level logical domains with up to 65x-375x token reduction.
+  - **Minimal review context** (`get_code_review_context`): focuses LLM context exclusively on impacted subgraphs, preventing prompt token exhaustion on large repos.
+  - **Interactive graph queries** (`query_code_graph`): inspect caller/callee relations, inheritance hierarchies, and import maps.
 - **Git-backed Agent Checkpoints**: Reviewable diff previews before file edits, scoped commits, history tracking, and one-click rollback.
 - **Remote Git Integration**: Streamed cloning, SSH/PAT authentication, branch switching, fetch, pull, push previews, and merge-conflict assistance.
 - **Agent Sandbox & Security**: Safe tool execution boundaries, per-tool approval flows, and local Docker/subprocess sandboxing.
@@ -67,6 +73,7 @@ The folder-based package may start faster and is usually better for future insta
 ├── launcher.py                 # EXE-friendly launcher that opens the browser
 ├── tools.py                    # Tool schemas and tool execution handlers
 ├── context_builder.py          # LeanCTX prompt compressor, AST outlines, and token budget manager
+├── code_graph_service.py       # Code-review-graph integration: AST call-graph indexing & blast radius
 ├── hindsight_manager.py        # Vectorize Hindsight client adapter, bank scoping, and local fallback
 ├── git_manager.py              # Git clone, diff, checkpoint, commit, push, and revert layer
 ├── memory_graph.py             # Embedded Knowledge Graph (KG-RAG) memory subsystem
