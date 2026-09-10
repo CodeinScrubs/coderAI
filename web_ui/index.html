@@ -69,6 +69,9 @@
         <button class="activity-btn" type="button" title="Files" aria-label="Files">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
         </button>
+        <button class="activity-btn" type="button" title="Code Graph" aria-label="Graph">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+        </button>
         <button class="activity-btn" type="button" title="Agent" aria-label="Agent">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="7" width="16" height="12" rx="2"/><path d="M12 7V3"/><circle cx="9" cy="13" r="1"/><circle cx="15" cy="13" r="1"/></svg>
         </button>
@@ -121,70 +124,6 @@
           <div id="fileBrowserView" class="file-view active">
             <input id="fileSearch" class="search" placeholder="Filter files...">
             <div id="fileList" class="file-list"></div>
-
-            <div class="schematic-graph-box" id="schematicGraphBox">
-              <div class="schematic-graph-header">
-                <div class="schematic-graph-title">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                    <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
-                    <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
-                  </svg>
-                  <span>Graphify Code Knowledge Graph</span>
-                  <span id="graphifyBadge" class="graphify-badge">Physics AST</span>
-                </div>
-                <div class="schematic-graph-controls">
-                  <div class="graphify-search-wrap">
-                    <input id="graphifySearchInput" type="text" placeholder="Search symbols..." autocomplete="off">
-                    <div id="graphifySearchResults" class="graphify-search-dropdown" style="display:none"></div>
-                  </div>
-                  <button id="toggleGraphifyPhysics" type="button" class="ghost" title="Toggle Force Physics Simulation">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                    <span id="graphifyPhysicsText">Physics</span>
-                  </button>
-                  <button id="fitGraphifyGraph" type="button" class="ghost icon-only" title="Fit & Center Graph">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
-                  </button>
-                  <button id="openGraphifyStandalone" type="button" class="ghost icon-only" title="Open Fullscreen Graph in New Tab">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-                  </button>
-                  <button id="refreshSchematicGraph" type="button" class="ghost icon-only" title="Rebuild & Refresh Graph">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.36"/><path d="M21 4v6h-6"/></svg>
-                  </button>
-                  <button id="toggleSchematicFullscreen" type="button" class="ghost icon-only" title="Toggle Fullscreen">
-                    <svg id="schematicExpandIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
-                    <svg id="schematicCompressIcon" style="display:none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/></svg>
-                  </button>
-                </div>
-              </div>
-
-              <div class="graphify-main-layout" id="schematicCanvasContainer">
-                <div id="graphifyNetwork" class="graphify-network-viewport"></div>
-                <div id="schematicGraphEmpty" class="schematic-empty" style="display:none">No graph relationships found</div>
-
-                <!-- Graphify Sidebar -->
-                <div class="graphify-inspector-sidebar" id="graphifySidebar">
-                  <div class="inspector-section">
-                    <div class="inspector-title">Node Inspector</div>
-                    <div id="graphifyInspectorContent" class="inspector-content">
-                      <span class="inspector-empty">Click any node to view connections</span>
-                    </div>
-                  </div>
-                  <div class="inspector-section communities-section">
-                    <div class="inspector-title">Communities (Clusters)</div>
-                    <div id="graphifyCommunityLegend" class="community-legend-list"></div>
-                  </div>
-                  <div class="inspector-footer" id="graphifyStatsFooter">0 nodes · 0 edges</div>
-                </div>
-              </div>
-
-              <div class="schematic-legend">
-                <span class="legend-chip chip-folder"><i class="dot" style="background:#38bdf8"></i> File</span>
-                <span class="legend-chip chip-class"><i class="dot" style="background:#fbbf24"></i> Class</span>
-                <span class="legend-chip chip-func"><i class="dot" style="background:#10b981"></i> Function</span>
-                <span class="legend-chip chip-call"><i class="dot" style="background:#a855f7"></i> Call</span>
-                <span class="legend-hint">💡 Double-click node to open in editor</span>
-              </div>
-            </div>
           </div>
           <div id="codeIndexView" class="file-view code-index-view">
             <div class="index-heading"><div><strong>Codebase index</strong><span>Hybrid keyword and semantic retrieval</span></div><i id="indexStatusDot"></i></div>
@@ -676,6 +615,76 @@
             </section>
           </div>
         </div>
+      </section>
+
+      <!-- Dedicated Fullscreen/Full-Area Code Knowledge Graph View -->
+      <section id="codeGraphView" class="code-graph-view" aria-label="Code Knowledge Graph">
+        <header class="code-graph-header">
+          <div class="code-graph-header-left">
+            <div class="code-graph-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px;color:#38bdf8">
+                <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+                <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+              </svg>
+              <strong>Architecture &amp; Knowledge Graph</strong>
+              <span id="graphifyBadge" class="graphify-badge">Physics AST</span>
+            </div>
+            <div id="graphQuickStats" class="graph-quick-stats">
+              <span id="graphNodeCountBadge">0 nodes</span> · <span id="graphEdgeCountBadge">0 edges</span> · <span id="graphClusterCountBadge">0 clusters</span>
+            </div>
+          </div>
+          <div class="code-graph-controls">
+            <div class="graphify-search-wrap">
+              <input id="graphifySearchInput" type="text" placeholder="Search functions, classes, files..." autocomplete="off">
+              <div id="graphifySearchResults" class="graphify-search-dropdown" style="display:none"></div>
+            </div>
+            <button id="toggleGraphifyPhysics" type="button" class="ghost" title="Toggle Force Physics Simulation">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              <span id="graphifyPhysicsText">Physics</span>
+            </button>
+            <button id="fitGraphifyGraph" type="button" class="ghost icon-only" title="Fit &amp; Center Graph">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+            <button id="openGraphifyStandalone" type="button" class="ghost icon-only" title="Open Fullscreen Graph in Standalone Tab">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            </button>
+            <button id="refreshSchematicGraph" type="button" class="ghost icon-only" title="Rebuild AST &amp; Refresh Graph">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.36"/><path d="M21 4v6h-6"/></svg>
+            </button>
+            <button id="closeGraphViewBtn" type="button" class="primary small-btn" title="Return to Editor / Files">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+              Back to Editor
+            </button>
+          </div>
+        </header>
+
+        <div class="graphify-main-layout" id="schematicCanvasContainer">
+          <div id="graphifyNetwork" class="graphify-network-viewport"></div>
+          <div id="schematicGraphEmpty" class="schematic-empty" style="display:none">No graph relationships found</div>
+
+          <!-- Graphify Sidebar -->
+          <div class="graphify-inspector-sidebar" id="graphifySidebar">
+            <div class="inspector-section">
+              <div class="inspector-title">Node Inspector</div>
+              <div id="graphifyInspectorContent" class="inspector-content">
+                <span class="inspector-empty">Click any node to view connections</span>
+              </div>
+            </div>
+            <div class="inspector-section communities-section">
+              <div class="inspector-title">Communities (Clusters)</div>
+              <div id="graphifyCommunityLegend" class="community-legend-list"></div>
+            </div>
+            <div class="inspector-footer" id="graphifyStatsFooter">0 nodes · 0 edges</div>
+          </div>
+        </div>
+
+        <footer class="schematic-legend">
+          <span class="legend-chip chip-folder"><i class="dot" style="background:#38bdf8"></i> File</span>
+          <span class="legend-chip chip-class"><i class="dot" style="background:#fbbf24"></i> Class</span>
+          <span class="legend-chip chip-func"><i class="dot" style="background:#10b981"></i> Function</span>
+          <span class="legend-chip chip-call"><i class="dot" style="background:#a855f7"></i> Call</span>
+          <span class="legend-hint">💡 Double-click any node to open and jump to line in Code Editor</span>
+        </footer>
       </section>
     </div>
 

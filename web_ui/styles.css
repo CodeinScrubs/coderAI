@@ -302,7 +302,7 @@ body.loading .signal.is-agent .signal-label { color: var(--warning); }
 
 .activity-rail {
   display: grid;
-  grid-template-rows: repeat(4, 48px) 1fr;
+  grid-template-rows: repeat(5, 48px) 1fr;
   align-content: start;
   background: var(--activity);
   border-right: 1px solid var(--line);
@@ -417,6 +417,135 @@ body.utility-mode .agent-panel {
 .projects-header { padding-bottom: 20px; margin-bottom: 22px; }
 .projects-header h1, .project-home-header h1 { margin: 0; font-size: 22px; letter-spacing: 0; }
 .projects-header p { margin: 5px 0 0; color: var(--muted); }
+
+/* ── Code Graph Fullscreen/Full-Area View ───────────────────────── */
+.code-graph-view {
+  display: none;
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  position: relative;
+  z-index: 10;
+}
+.code-graph-view.active {
+  display: flex;
+  flex-direction: column;
+}
+
+.code-graph-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 18px;
+  background: var(--panel-3);
+  border-bottom: 1px solid var(--line);
+  gap: 14px;
+  flex-shrink: 0;
+}
+
+.code-graph-header-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.code-graph-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.graph-quick-stats {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--mono);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.code-graph-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.code-graph-controls button {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 11.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.code-graph-controls button.icon-only {
+  width: 28px;
+  padding: 0;
+  justify-content: center;
+}
+
+.code-graph-controls button.icon-only svg {
+  width: 15px;
+  height: 15px;
+}
+
+.code-graph-view .graphify-main-layout {
+  flex: 1 1 0%;
+  min-height: 0;
+  height: 100%;
+  width: 100%;
+  display: flex;
+  position: relative;
+  background: #0d0f14;
+  overflow: hidden;
+}
+
+.code-graph-view .graphify-network-viewport {
+  flex: 1 1 0%;
+  height: 100%;
+  min-width: 0;
+  position: relative;
+  outline: none;
+}
+
+.code-graph-view .graphify-inspector-sidebar {
+  width: 280px;
+  min-width: 240px;
+  max-width: 320px;
+  border-left: 1px solid var(--line);
+  background: #13161f;
+  display: flex;
+  flex-direction: column;
+  z-index: 10;
+  overflow-y: auto;
+  font-size: 11.5px;
+}
+
+.code-graph-view .schematic-legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 6px 16px;
+  background: var(--panel-3);
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
 .project-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
 .project-card {
   display: grid;
@@ -1778,7 +1907,7 @@ body.loading .loading-overlay { display: block; }
   body { overflow: auto; }
   .app-shell { height: auto; min-height: 100%; grid-template-rows: auto auto minmax(0, 1fr) 22px; }
   .workbench { grid-template-columns: 44px minmax(0, 1fr); height: auto; min-height: calc(100vh - 62px); }
-  .activity-rail { grid-template-rows: repeat(4, 44px) 1fr; }
+  .activity-rail { grid-template-rows: repeat(5, 44px) 1fr; }
   .activity-btn { width: 44px; height: 44px; }
   .activity-btn svg { width: 20px; height: 20px; }
   .layout { grid-template-columns: 1fr; height: auto; }

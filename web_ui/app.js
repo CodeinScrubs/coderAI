@@ -378,6 +378,7 @@ const commandDefinitions = [
   { id: "prompts", icon: ">_", title: "System prompts", detail: "Select or edit the active system prompt", keywords: "/prompt system instruction", shortcut: "" },
   { id: "memory", icon: "M", title: "Memory", detail: "Browse sessions, project facts, and preferences", keywords: "/memory fact preference", shortcut: "" },
   { id: "git", icon: "G", title: "Git history", detail: "Review repository status, commits, clone, and push", keywords: "/git diff commit history", shortcut: "" },
+  { id: "graph", icon: "🕸️", title: "Code & Architecture Graph", detail: "Interactive Graphify knowledge graph with AST call trees and cluster analysis", keywords: "/graph architecture visualizer code-review-graph ast", shortcut: "" },
   { id: "settings", icon: "CFG", title: "Settings", detail: "Model, runtime, and web search controls", keywords: "/settings model tavily", shortcut: "" },
   { id: "advanced", icon: "...", title: "Advanced settings", detail: "Context, memory, Git review, skills, and Custom API", keywords: "/advanced context api embedding", shortcut: "" },
 ];
@@ -416,6 +417,7 @@ function closeCommandPalette() {
 async function runCommand(id) {
   closeCommandPalette();
   if (id === "projects") return showProjects();
+  if (id === "graph") return showCodeGraphView();
   showWorkbench();
   if (id === "files") { setActiveActivity("Files"); activateTab("files"); return $("fileSearch").focus(); }
   if (id === "index") { setActiveActivity("Files"); activateTab("files"); return activateFileView("index"); }
@@ -446,6 +448,7 @@ function showWorkbench() {
   const layout = $("mainLayout") || document.querySelector(".layout");
   if (layout) layout.classList.remove("hidden");
   $("projectsView")?.classList.remove("active");
+  $("codeGraphView")?.classList.remove("active");
 }
 
 async function showProjects() {
@@ -455,9 +458,26 @@ async function showProjects() {
   $("projectsView")?.classList.add("active");
   $("projectsIndex")?.classList.remove("hidden");
   $("projectHome")?.classList.remove("active");
+  $("codeGraphView")?.classList.remove("active");
   const payload = await api("/api/projects");
   state.projectCards = payload.projects || [];
   renderProjectCards();
+}
+
+function showCodeGraphView() {
+  document.body.classList.remove("utility-mode");
+  const layout = $("mainLayout") || document.querySelector(".layout");
+  if (layout) layout.classList.add("hidden");
+  $("projectsView")?.classList.remove("active");
+  $("codeGraphView")?.classList.add("active");
+  setActiveActivity("Graph");
+
+  refreshSchematicGraph();
+  setTimeout(() => {
+    if (graphifyState.network) {
+      graphifyState.network.fit({ animation: false });
+    }
+  }, 100);
 }
 
 async function deleteProject(projectId, projectName) {
@@ -2264,6 +2284,8 @@ document.querySelectorAll(".activity-btn").forEach((btn) => {
       showWorkbench();
       activateTab("files");
       $("fileSearch").focus();
+    } else if (label === "Graph") {
+      showCodeGraphView();
     } else if (label === "Agent") {
       showWorkbench();
       $("promptInput").focus();
@@ -3241,15 +3263,20 @@ function renderGraphifyLegend(legend) {
 
 function updateGraphifyStatsFooter() {
   const footer = $("graphifyStatsFooter");
-  if (!footer) return;
   const nodesCount = graphifyState.rawNodes.length;
   const edgesCount = graphifyState.rawEdges.length;
   const commsCount = graphifyState.legend.length;
-  footer.textContent = `${nodesCount} nodes · ${edgesCount} edges · ${commsCount} clusters`;
+  if (footer) footer.textContent = `${nodesCount} nodes · ${edgesCount} edges · ${commsCount} clusters`;
+  const nodeBadge = $("graphNodeCountBadge");
+  const edgeBadge = $("graphEdgeCountBadge");
+  const clusterBadge = $("graphClusterCountBadge");
+  if (nodeBadge) nodeBadge.textContent = `${nodesCount} nodes`;
+  if (edgeBadge) edgeBadge.textContent = `${edgesCount} edges`;
+  if (clusterBadge) clusterBadge.textContent = `${commsCount} clusters`;
 }
 
 function toggleSchematicFullscreen() {
-  const box = $("schematicGraphBox");
+  const box = $("codeGraphView") || $("schematicGraphBox");
   if (!box) return;
   graphifyState.isFullscreen = !graphifyState.isFullscreen;
   box.classList.toggle("fullscreen", graphifyState.isFullscreen);
@@ -3357,6 +3384,16 @@ function initSchematicArchitectureGraph() {
     fullscreenBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       toggleSchematicFullscreen();
+    });
+  }
+
+  const closeBtn = $("closeGraphViewBtn");
+  if (closeBtn) {
+    closeBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      showWorkbench();
+      setActiveActivity("Files");
+      activateTab("files");
     });
   }
 
