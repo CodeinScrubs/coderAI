@@ -763,7 +763,8 @@ def create_app() -> FastAPI:
         ws_cwd = get_workspace()
         session = terminal_manager.get_or_create_session(session_id, shell_type=shell, cwd=ws_cwd)
 
-        sub_queue = session.subscribe()
+        loop = asyncio.get_running_loop()
+        handle, sub_queue = session.subscribe_async(loop)
         ws_lock = asyncio.Lock()
 
         async def safe_send(text: str) -> None:
@@ -775,41 +776,22 @@ def create_app() -> FastAPI:
                 except Exception:
                     pass
 
-        # Replay buffered output history if any, clearing xterm screen first
+        # Replay buffered output history only if this is a fresh connection to an existing session
         history = session.get_output_history()
         if history and history.strip():
-            await safe_send("\x1b[2J\x1b[H" + history)
-        else:
-            session.write("\r\n")
-
-        loop = asyncio.get_running_loop()
-
-        def _get_batch_output():
-            items = []
-            try:
-                first = sub_queue.get(timeout=0.20)
-                items.append(first)
-                while not sub_queue.empty() and len(items) < 100:
-                    try:
-                        items.append(sub_queue.get_nowait())
-                    except queue.Empty:
-                        break
-            except queue.Empty:
-                pass
-            return items
+            await safe_send(history)
 
         async def send_terminal_output():
-            while True:
-                try:
-                    events = await loop.run_in_executor(None, _get_batch_output)
-                    if events:
-                        combined = "".join((e.get("data") or e.get("text", "")) for e in events if e)
-                        if combined:
-                            await safe_send(combined)
-                except asyncio.CancelledError:
-                    break
-                except Exception:
-                    break
+            try:
+                while True:
+                    event = await sub_queue.get()
+                    text = (event.get("data") or event.get("text", "")) if event else ""
+                    if text:
+                        await safe_send(text)
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
 
         sender_task = asyncio.create_task(send_terminal_output())
 
@@ -823,7 +805,12 @@ def create_app() -> FastAPI:
                         if mtype == "input":
                             raw_input = data.get("data", "")
                             # Protect against unsolicited escape echoes
-                            if raw_input and not (raw_input.startswith("\x1b[?") and raw_input.endswith("c")):
+                            if (
+                                raw_input
+                                and not (raw_input.startswith("\x1b[?") and raw_input.endswith("c"))
+                                and "?1;2c" not in raw_input
+                                and "?1;0c" not in raw_input
+                            ):
                                 session.write(raw_input)
                         elif mtype == "resize":
                             try:
@@ -850,7 +837,7 @@ def create_app() -> FastAPI:
         except Exception:
             pass
         finally:
-            session.unsubscribe(sub_queue)
+            session.unsubscribe_async(handle)
             sender_task.cancel()
             try:
                 await sender_task

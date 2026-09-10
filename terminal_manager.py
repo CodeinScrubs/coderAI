@@ -23,7 +23,7 @@ except Exception:
 
 # Strip VT device attribute queries and unsolicited capability probes
 # that trigger xterm to send stdin keystrokes (like ?1;2c) back to the shell.
-VT_QUERY_FILTER = re.compile(r"\x1b\[c|\x1b\[\?1004[hl]|\x1b\[\?9001[hl]|\x1b\[[12]t")
+VT_QUERY_FILTER = re.compile(r"\x1b\[c|\x1b\[\?1004[hl]|\x1b\[\?9001[hl]|\x1b\[[12]t|\x1b\[\?1;[0-9]+c|\?1;[0-9]+c")
 
 
 class TerminalSession:
@@ -45,7 +45,7 @@ class TerminalSession:
         self.pty_proc: winpty.PtyProcess | None = None
         self.active_process: subprocess.Popen | None = None
         self.output_queue: queue.Queue[dict] = queue.Queue()
-        self._subscribers: set[queue.Queue] = set()
+        self._subscribers: set[Any] = set()
         self._subscribers_lock = threading.Lock()
         self.output_buffer: list[str] = []
         self._buffer_lock = threading.Lock()
@@ -66,15 +66,34 @@ class TerminalSession:
         with self._subscribers_lock:
             self._subscribers.discard(q)
 
+    def subscribe_async(self, loop: Any) -> tuple[tuple[Any, Any], Any]:
+        import asyncio
+        q: asyncio.Queue = asyncio.Queue()
+        handle = (loop, q)
+        with self._subscribers_lock:
+            self._subscribers.add(handle)
+        return handle, q
+
+    def unsubscribe_async(self, handle: tuple[Any, Any]) -> None:
+        with self._subscribers_lock:
+            self._subscribers.discard(handle)
+
     def _broadcast(self, item: dict) -> None:
         self.output_queue.put(item)
         with self._subscribers_lock:
             dead = []
-            for q in self._subscribers:
+            for sub in self._subscribers:
                 try:
-                    q.put_nowait(item)
+                    if isinstance(sub, tuple):
+                        sub_loop, async_q = sub
+                        if not sub_loop.is_closed():
+                            sub_loop.call_soon_threadsafe(async_q.put_nowait, item)
+                        else:
+                            dead.append(sub)
+                    else:
+                        sub.put_nowait(item)
                 except Exception:
-                    dead.append(q)
+                    dead.append(sub)
             for d in dead:
                 self._subscribers.discard(d)
 
@@ -91,6 +110,8 @@ class TerminalSession:
     def start_shell(self) -> None:
         with self._lock:
             self._close_internal()
+            with self._buffer_lock:
+                self.output_buffer.clear()
             if not self.cwd.exists():
                 self.cwd = Path.cwd().resolve()
 
@@ -107,17 +128,6 @@ class TerminalSession:
                     self._is_running = True
                     self._reader_thread = threading.Thread(target=self._pty_reader, daemon=True)
                     self._reader_thread.start()
-
-                    # Kickstart initial prompt display
-                    def _kickstart() -> None:
-                        time.sleep(0.08)
-                        with self._lock:
-                            if self.pty_proc and self.pty_proc.isalive():
-                                try:
-                                    self.pty_proc.write("\r\n")
-                                except Exception:
-                                    pass
-                    threading.Thread(target=_kickstart, daemon=True).start()
                     return
                 except Exception as exc:
                     self.output_queue.put({"type": "output", "text": f"\r\n[WinPTY error: {exc}]\r\n", "data": f"\r\n[WinPTY error: {exc}]\r\n"})
@@ -300,7 +310,8 @@ class TerminalSession:
         p = Path(new_cwd).resolve()
         if p.exists() and p.is_dir():
             self.cwd = p
-            self.start_shell()
+            if not self.is_running():
+                self.start_shell()
             return True
         return False
 
@@ -344,8 +355,8 @@ class TerminalManager:
                 session = self._sessions[session_id]
                 if shell_type and session.shell_type != shell_type.lower():
                     session.restart(shell_type)
-                elif cwd and session.cwd != Path(cwd).resolve():
-                    session.set_cwd(cwd)
+                elif not session.is_running():
+                    session.start_shell()
             return self._sessions[session_id]
 
     def remove_session(self, session_id: str) -> None:
