@@ -431,6 +431,15 @@ class CodebaseIndex:
         Returns an interactive nodes & edges schematic graph of files, functions,
         classes, imports, and calls across the project.
         """
+        try:
+            from code_graph_service import code_graph_service
+            if code_graph_service.is_available:
+                crg_res = code_graph_service.get_schematic_graph(self.workspace)
+                if crg_res and crg_res.get("nodes"):
+                    return crg_res
+        except Exception as exc:
+            logger.debug("code_graph_service get_schematic_graph fallback: %s", exc)
+
         graph = self.get_graph()
         nodes_map = dict(graph.nodes)
         edges_list = list(graph.edges)

@@ -49,7 +49,7 @@ def test_code_graph_service_disabled_fallback():
 
 def test_code_graph_service_real_build():
     """Test graph build and stats on a temporary python repo."""
-    with tempfile.TemporaryDirectory() as tmpdir:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         test_py = os.path.join(tmpdir, "main.py")
         with open(test_py, "w", encoding="utf-8") as f:
             f.write(
@@ -141,3 +141,36 @@ def test_fastapi_graph_endpoints():
         assert resp_imp.status_code == 200
         data_imp = resp_imp.json()
         assert "ok" in data_imp
+
+
+def test_schematic_graph_integration():
+    """Verify that get_schematic_graph produces nodes and edges for the UI canvas."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+        test_py = os.path.join(tmpdir, "service.py")
+        with open(test_py, "w", encoding="utf-8") as f:
+            f.write(
+                "class Worker:\n"
+                "    def process(self):\n"
+                "        return 1\n\n"
+                "def main():\n"
+                "    w = Worker()\n"
+                "    return w.process()\n"
+            )
+
+        # Build graph first
+        code_graph_service.build_or_update(tmpdir)
+        graph = code_graph_service.get_schematic_graph(tmpdir)
+
+        assert isinstance(graph, dict)
+        assert "nodes" in graph
+        assert "edges" in graph
+        assert len(graph["nodes"]) > 0
+
+        # Verify node types compatible with UI canvas
+        node_types = {n["type"] for n in graph["nodes"]}
+        assert "file" in node_types
+        # Verify edge keys
+        for e in graph["edges"]:
+            assert "source" in e
+            assert "target" in e
+            assert "type" in e

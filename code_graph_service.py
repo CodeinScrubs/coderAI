@@ -263,6 +263,200 @@ class CodeGraphService:
                 "error": str(exc),
             }
 
+    def get_schematic_graph(
+        self,
+        workspace_path: str | Path | None = None,
+        max_nodes: int = 180,
+    ) -> dict[str, Any]:
+        """Build an interactive UI schematic graph (nodes & edges) using Tree-sitter AST & SQLite knowledge graph."""
+        if not self._available:
+            return {"nodes": [], "edges": [], "source": "unavailable"}
+
+        repo_str = self._resolve_repo(workspace_path)
+        repo = Path(repo_str)
+
+        try:
+            from code_review_graph.tools._common import _get_store
+            store, _ = _get_store(repo_str)
+        except Exception as exc:
+            logger.debug("Failed to get CRG store for %s: %s", repo_str, exc)
+            return {"nodes": [], "edges": [], "source": "unavailable"}
+
+        try:
+            all_files = store.get_all_files()
+            if not all_files:
+                self.build_or_update(repo_str)
+                all_files = store.get_all_files()
+
+            if not all_files:
+                return {"nodes": [], "edges": [], "source": "empty"}
+
+            all_nodes = store.get_all_nodes()
+            all_edges = store.get_all_edges()
+
+            entry_names = {
+                "main.py", "app.py", "web_app.py", "fastapi_app.py", "launcher.py",
+                "index.js", "server.js", "index.ts", "server.ts", "main.go", "main.rs"
+            }
+            nodes: list[dict[str, Any]] = []
+            edges: list[dict[str, Any]] = []
+            folder_nodes: dict[str, dict[str, Any]] = {}
+            node_ids: set[str] = set()
+            file_symbol_counts: dict[str, int] = {}
+
+            for n in all_nodes:
+                if n.file_path:
+                    file_symbol_counts[n.file_path] = file_symbol_counts.get(n.file_path, 0) + 1
+
+            # 1. File nodes & folder containment
+            for fpath in all_files:
+                p = Path(fpath)
+                try:
+                    rel = p.relative_to(repo).as_posix()
+                except Exception:
+                    rel = p.as_posix()
+
+                is_entry = p.name.lower() in entry_names or rel in entry_names
+                sym_count = file_symbol_counts.get(fpath, 0)
+
+                nodes.append({
+                    "id": rel,
+                    "label": p.name,
+                    "full_path": rel,
+                    "type": "file",
+                    "is_entry": is_entry,
+                    "symbols_count": sym_count,
+                    "start_line": 1,
+                    "end_line": 1,
+                })
+                node_ids.add(rel)
+
+                parent = Path(rel).parent
+                while parent and parent.as_posix() != ".":
+                    p_str = parent.as_posix()
+                    f_id = f"folder::{p_str}"
+                    if f_id not in folder_nodes:
+                        folder_nodes[f_id] = {
+                            "id": f_id,
+                            "label": parent.name,
+                            "full_path": p_str,
+                            "type": "folder",
+                            "start_line": 1,
+                            "end_line": 1,
+                        }
+                        node_ids.add(f_id)
+                    parent = parent.parent if parent.parent != parent and parent.parent.as_posix() != "." else None
+
+                parent_dir = Path(rel).parent.as_posix()
+                if parent_dir and parent_dir != ".":
+                    edges.append({
+                        "source": f"folder::{parent_dir}",
+                        "target": rel,
+                        "type": "contains",
+                        "label": "contains",
+                    })
+
+            nodes.extend(folder_nodes.values())
+
+            # 2. Key Classes & Functions
+            sorted_nodes = sorted(
+                all_nodes,
+                key=lambda x: (0 if x.kind == "Class" else 1 if x.kind == "Function" else 2)
+            )
+
+            file_added_symbols: dict[str, int] = {}
+            for n in sorted_nodes:
+                if len(nodes) >= max_nodes:
+                    break
+                if n.kind not in ("Class", "Function") or not n.file_path:
+                    continue
+
+                p = Path(n.file_path)
+                try:
+                    rel_file = p.relative_to(repo).as_posix()
+                except Exception:
+                    rel_file = p.as_posix()
+
+                if file_added_symbols.get(rel_file, 0) >= 6:
+                    continue
+
+                sym_id = f"{rel_file}::{n.name}"
+                if sym_id in node_ids:
+                    continue
+
+                file_added_symbols[rel_file] = file_added_symbols.get(rel_file, 0) + 1
+                nodes.append({
+                    "id": sym_id,
+                    "label": n.name,
+                    "file_path": rel_file,
+                    "type": "class" if n.kind == "Class" else "function",
+                    "start_line": n.line_start or 1,
+                    "end_line": n.line_end or 1,
+                })
+                node_ids.add(sym_id)
+
+                edges.append({
+                    "source": rel_file,
+                    "target": sym_id,
+                    "type": "defines",
+                    "label": "defines",
+                })
+
+            # 3. Call and Import Edges
+            seen_edges: set[tuple[str, str, str]] = set()
+            for e in all_edges:
+                src_file = e.file_path
+                if not src_file:
+                    continue
+                try:
+                    src_rel = Path(src_file).relative_to(repo).as_posix()
+                except Exception:
+                    src_rel = Path(src_file).as_posix()
+
+                target_qn = e.target_qualified or ""
+                target_name = Path(target_qn).name if target_qn else None
+
+                target_id = None
+                if target_qn in node_ids:
+                    target_id = target_qn
+                elif target_name and target_name in node_ids:
+                    target_id = target_name
+
+                if target_id and src_rel in node_ids and src_rel != target_id:
+                    edge_type = "calls" if e.kind == "CALLS" else "inherits" if e.kind == "INHERITS" else "imports"
+                    edge_key = (src_rel, target_id, edge_type)
+                    if edge_key not in seen_edges:
+                        seen_edges.add(edge_key)
+                        edges.append({
+                            "source": src_rel,
+                            "target": target_id,
+                            "type": edge_type,
+                            "label": edge_type,
+                        })
+
+            file_count = len(all_files)
+            symbol_count = len([n for n in all_nodes if n.kind in ("Class", "Function", "Test")])
+            return {
+                "nodes": nodes,
+                "edges": edges,
+                "file_count": file_count,
+                "symbol_count": symbol_count,
+                "source": "code-review-graph",
+                "stats": {
+                    "total_files": file_count,
+                    "total_nodes": len(all_nodes),
+                    "total_edges": len(all_edges),
+                },
+            }
+        except Exception as exc:
+            logger.exception("Error building schematic graph from code-review-graph: %s", exc)
+            return {"nodes": [], "edges": [], "file_count": 0, "symbol_count": 0, "source": "error", "error": str(exc)}
+        finally:
+            try:
+                store.close()
+            except Exception:
+                pass
+
 
 # Global singleton instance
 code_graph_service = CodeGraphService()
