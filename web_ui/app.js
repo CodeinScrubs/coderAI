@@ -2898,387 +2898,402 @@ function setupSkillSlashAutocomplete() {
   });
 }
 
-// ── Interactive Schematic Architecture & Function Dependency Graph ──
+/// ── Interactive Graphify Knowledge Graph Subsystem (Vis-Network Physics Engine) ──
 
-let schematicGraphState = {
-  nodes: [],
-  edges: [],
-  nodeMap: new Map(),
-  transform: { x: 0, y: 0, scale: 1 },
-  isDragging: false,
-  dragTarget: null,
-  dragStart: { x: 0, y: 0 },
-  hoveredNode: null,
+let graphifyState = {
+  network: null,
+  nodesDS: null,
+  edgesDS: null,
+  rawNodes: [],
+  rawEdges: [],
+  legend: [],
+  stats: {},
+  physicsEnabled: true,
   isFullscreen: false,
   lastWorkspace: null,
+  hiddenCommunities: new Set(),
 };
 
 async function refreshSchematicGraph(force = false) {
   const currentWs = state.data?.workspace?.path;
   if (!currentWs) return;
-  if (!force && schematicGraphState.lastWorkspace === currentWs && schematicGraphState.nodes.length > 0) {
+  if (!force && graphifyState.lastWorkspace === currentWs && graphifyState.rawNodes.length > 0) {
     return;
   }
-  schematicGraphState.lastWorkspace = currentWs;
+  graphifyState.lastWorkspace = currentWs;
 
   try {
-    const data = await api("/api/index/graph");
-    renderSchematicGraphData(data);
+    let data = null;
+    try {
+      data = await api("/api/graph/graphify-data");
+    } catch (e) {
+      console.warn("Graphify API error, falling back to /api/index/graph", e);
+    }
+    if (!data || !data.nodes || data.nodes.length === 0) {
+      data = await api("/api/index/graph");
+    }
+    renderGraphifyNetwork(data);
   } catch (err) {
+    console.error("Failed to load graphify graph:", err);
     const emptyEl = $("schematicGraphEmpty");
     if (emptyEl) {
       emptyEl.style.display = "flex";
-      emptyEl.textContent = "Could not load architecture graph";
+      emptyEl.textContent = "Could not load knowledge graph";
     }
   }
 }
 
-function renderSchematicGraphData(data) {
-  const rawNodes = data?.nodes || [];
-  const rawEdges = data?.edges || [];
+function renderGraphifyNetwork(data) {
+  const container = $("graphifyNetwork");
   const emptyEl = $("schematicGraphEmpty");
+  if (!container) return;
 
-  if (!rawNodes.length) {
+  if (typeof vis === "undefined") {
+    if (emptyEl) {
+      emptyEl.style.display = "flex";
+      emptyEl.textContent = "Graph visualizer library (vis-network) loading...";
+    }
+    setTimeout(() => {
+      if (typeof vis !== "undefined") renderGraphifyNetwork(data);
+    }, 500);
+    return;
+  }
+
+  if (!data || !data.nodes || !data.nodes.length) {
     if (emptyEl) {
       emptyEl.style.display = "flex";
       emptyEl.textContent = "No graph relationships found";
     }
-    schematicGraphState.nodes = [];
-    schematicGraphState.edges = [];
-    drawSchematicCanvas();
+    if (graphifyState.network) {
+      graphifyState.network.destroy();
+      graphifyState.network = null;
+    }
     return;
   }
 
   if (emptyEl) emptyEl.style.display = "none";
 
-  const folderNodes = rawNodes.filter((n) => n.type === "folder");
-  const fileNodes = rawNodes.filter((n) => n.type === "file");
-  const symbolNodes = rawNodes.filter((n) => n.type !== "file" && n.type !== "folder");
-
-  const canvas = $("schematicCanvas");
-  const width = canvas ? (canvas.clientWidth || 300) : 300;
-  const height = canvas ? (canvas.clientHeight || 200) : 200;
-
-  const nodeMap = new Map();
-  const nodes = [];
-
-  const mainNodes = [...folderNodes, ...fileNodes];
-  const mainCount = Math.max(1, mainNodes.length);
-  const rx = Math.max(110, Math.min(width * 0.36, 260));
-  const ry = Math.max(65, Math.min(height * 0.31, 155));
-  const cx = width / 2;
-  const cy = height / 2;
-
-  mainNodes.forEach((mn, idx) => {
-    const angle = (idx / mainCount) * 2 * Math.PI - Math.PI / 2;
-    const isFolder = mn.type === "folder";
-    const distMod = isFolder ? 0.88 : 1.0;
-    const fx = cx + rx * Math.cos(angle) * distMod;
-    const fy = cy + ry * Math.sin(angle) * distMod;
-
-    const nodeObj = {
-      id: mn.id,
-      label: mn.label || mn.id,
-      full_path: mn.full_path || mn.id,
-      type: mn.type,
-      is_entry: !!mn.is_entry,
-      symbols_count: mn.symbols_count || 0,
-      docstring: mn.docstring || "",
-      start_line: mn.start_line || 1,
-      end_line: mn.end_line || 1,
-      x: fx,
-      y: fy,
-      width: Math.max(70, Math.min(135, (mn.label || mn.id).length * 7 + (isFolder ? 30 : 26))),
-      height: isFolder ? 28 : 26,
+  // Normalize nodes if from legacy format
+  const rawNodes = data.nodes.map((n) => {
+    if (n.community !== undefined && n.size !== undefined) {
+      return n;
+    }
+    const isFolder = n.type === "folder";
+    const isFile = n.type === "file";
+    const color = isFolder ? "#38bdf8" : isFile ? "#3b82f6" : "#10b981";
+    return {
+      id: n.id,
+      label: n.label || n.id,
+      title: `${n.label || n.id} (${n.type})`,
+      color: {
+        background: color,
+        border: n.is_entry ? "#f43f5e" : "#ffffff",
+        highlight: { background: color, border: "#38bdf8" },
+      },
+      size: isFolder ? 24 : isFile ? 20 : 14,
+      font: { color: "#e0e0e0", size: 12, face: "Segoe UI, sans-serif" },
+      community: 0,
+      community_name: "Core",
+      source_file: n.full_path || n.file_path || n.id,
+      file_type: n.type,
+      degree: 1,
+      start_line: n.start_line || 1,
+      end_line: n.end_line || 1,
     };
-    nodes.push(nodeObj);
-    nodeMap.set(mn.id, nodeObj);
+  });
 
-    if (!isFolder) {
-      const fileSymbols = symbolNodes.filter((s) => s.file_path === mn.id);
-      const symCount = fileSymbols.length;
-      fileSymbols.forEach((sn, sIdx) => {
-        const sAngle = angle + ((sIdx + 1) / (symCount + 1) - 0.5) * 1.5;
-        const sDist = 45 + (sIdx % 2) * 15;
-        const sx = fx + sDist * Math.cos(sAngle);
-        const sy = fy + sDist * Math.sin(sAngle);
-
-        const symObj = {
-          id: sn.id,
-          label: sn.label,
-          file_path: sn.file_path,
-          type: sn.type || "function",
-          start_line: sn.start_line || 1,
-          end_line: sn.end_line || 1,
-          x: sx,
-          y: sy,
-          width: Math.max(50, Math.min(100, (sn.label || "").length * 6 + 18)),
-          height: 18,
-        };
-        nodes.push(symObj);
-        nodeMap.set(sn.id, symObj);
-      });
+  // Normalize edges if from legacy format
+  const rawEdges = (data.edges || []).map((e, idx) => {
+    if (e.from !== undefined && e.to !== undefined) {
+      return e;
     }
+    const relType = e.type || "imports";
+    const edgeColor = relType === "calls" ? "#a855f7" : relType === "inherits" ? "#f59e0b" : "#3b82f6";
+    return {
+      from: e.source,
+      to: e.target,
+      label: "",
+      title: `${relType} [${e.source} -> ${e.target}]`,
+      dashes: relType === "defines" || relType === "contains",
+      width: relType === "calls" ? 2 : 1.2,
+      color: { color: edgeColor, opacity: 0.75, highlight: "#f43f5e" },
+      arrows: { to: { enabled: true, scaleFactor: 0.5 } },
+    };
   });
 
-  const edges = [];
-  rawEdges.forEach((e) => {
-    const src = nodeMap.get(e.source);
-    const tgt = nodeMap.get(e.target);
-    if (src && tgt) {
-      edges.push({
-        source: src,
-        target: tgt,
-        type: e.type || "imports",
-        label: e.label || "",
-        symbol: e.symbol || "",
-      });
-    }
-  });
+  graphifyState.rawNodes = rawNodes;
+  graphifyState.rawEdges = rawEdges;
+  graphifyState.legend = data.legend || [];
+  graphifyState.stats = data.stats || {};
+  graphifyState.hiddenCommunities.clear();
 
-  schematicGraphState.nodes = nodes;
-  schematicGraphState.edges = edges;
-  schematicGraphState.nodeMap = nodeMap;
+  // Create Vis-Network datasets
+  const nodesDS = new vis.DataSet(
+    rawNodes.map((n) => ({
+      id: n.id,
+      label: n.label,
+      color: n.color,
+      size: n.size || 18,
+      font: n.font || { color: "#e0e0e0", size: 12 },
+      title: n.title || n.label,
+      shape: "dot",
+      borderWidth: 1.5,
+      _raw: n,
+    }))
+  );
 
-  fitSchematicView();
-  drawSchematicCanvas();
-}
+  const edgesDS = new vis.DataSet(
+    rawEdges.map((e, i) => ({
+      id: i,
+      from: e.from,
+      to: e.to,
+      label: "",
+      title: e.title || "",
+      dashes: !!e.dashes,
+      width: e.width || 1.2,
+      color: e.color || { color: "#38bdf8", opacity: 0.7 },
+      arrows: e.arrows || { to: { enabled: true, scaleFactor: 0.5 } },
+    }))
+  );
 
-function fitSchematicView() {
-  const canvas = $("schematicCanvas");
-  if (!canvas || !schematicGraphState.nodes.length) return;
+  graphifyState.nodesDS = nodesDS;
+  graphifyState.edgesDS = edgesDS;
 
-  const w = canvas.clientWidth || 300;
-  const h = canvas.clientHeight || 200;
-
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  schematicGraphState.nodes.forEach((n) => {
-    minX = Math.min(minX, n.x - (n.width || 20) / 2);
-    maxX = Math.max(maxX, n.x + (n.width || 20) / 2);
-    minY = Math.min(minY, n.y - (n.height || 20) / 2);
-    maxY = Math.max(maxY, n.y + (n.height || 20) / 2);
-  });
-
-  const graphW = Math.max(50, maxX - minX);
-  const graphH = Math.max(50, maxY - minY);
-  const padding = 40;
-
-  const scaleX = (w - padding * 2) / graphW;
-  const scaleY = (h - padding * 2) / graphH;
-  const scale = Math.max(0.4, Math.min(1.4, Math.min(scaleX, scaleY)));
-
-  const midX = (minX + maxX) / 2;
-  const midY = (minY + maxY) / 2;
-
-  schematicGraphState.transform = {
-    scale,
-    x: w / 2 - midX * scale,
-    y: h / 2 - midY * scale,
+  const options = {
+    physics: {
+      enabled: true,
+      solver: "forceAtlas2Based",
+      forceAtlas2Based: {
+        gravitationalConstant: -70,
+        centralGravity: 0.008,
+        springLength: 100,
+        springConstant: 0.08,
+        damping: 0.45,
+        avoidOverlap: 0.85,
+      },
+      stabilization: {
+        enabled: true,
+        iterations: 180,
+        fit: true,
+      },
+    },
+    interaction: {
+      hover: true,
+      tooltipDelay: 100,
+      hideEdgesOnDrag: true,
+      navigationButtons: false,
+      keyboard: false,
+      zoomView: true,
+      dragView: true,
+    },
+    nodes: {
+      shape: "dot",
+      borderWidth: 1.5,
+    },
+    edges: {
+      smooth: {
+        type: "continuous",
+        roundness: 0.2,
+      },
+    },
   };
-}
 
-function drawSchematicCanvas() {
-  const canvas = $("schematicCanvas");
-  if (!canvas) return;
-
-  const rect = canvas.getBoundingClientRect();
-  const dpr = window.devicePixelRatio || 1;
-  const w = Math.max(10, rect.width);
-  const h = Math.max(10, rect.height);
-
-  if (canvas.width !== Math.floor(w * dpr) || canvas.height !== Math.floor(h * dpr)) {
-    canvas.width = Math.floor(w * dpr);
-    canvas.height = Math.floor(h * dpr);
+  if (graphifyState.network) {
+    graphifyState.network.destroy();
   }
 
-  const ctx = canvas.getContext("2d");
-  ctx.save();
-  ctx.scale(dpr, dpr);
-  ctx.clearRect(0, 0, w, h);
+  const network = new vis.Network(container, { nodes: nodesDS, edges: edgesDS }, options);
+  graphifyState.network = network;
+  graphifyState.physicsEnabled = true;
 
-  const bgGrad = ctx.createRadialGradient(w / 2, h / 2, 20, w / 2, h / 2, Math.max(w, h));
-  bgGrad.addColorStop(0, "#14171d");
-  bgGrad.addColorStop(1, "#0d0f12");
-  ctx.fillStyle = bgGrad;
-  ctx.fillRect(0, 0, w, h);
+  network.once("stabilizationIterationsDone", () => {
+    network.setOptions({ physics: { enabled: false } });
+    graphifyState.physicsEnabled = false;
+    const pText = $("graphifyPhysicsText");
+    if (pText) pText.textContent = "Physics";
+    const pBtn = $("toggleGraphifyPhysics");
+    if (pBtn) pBtn.classList.remove("active");
+  });
 
-  const { x, y, scale } = schematicGraphState.transform;
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.scale(scale, scale);
+  network.on("click", (params) => {
+    if (params.nodes.length > 0) {
+      showGraphifyNodeInfo(params.nodes[0]);
+    }
+  });
 
-  const hovered = schematicGraphState.hoveredNode;
-
-  // 1. Draw Edges
-  schematicGraphState.edges.forEach((edge) => {
-    const src = edge.source;
-    const tgt = edge.target;
-    if (!src || !tgt) return;
-
-    const isConnectedToHover = hovered && (hovered === src || hovered === tgt);
-    ctx.beginPath();
-    ctx.moveTo(src.x, src.y);
-
-    if (edge.type === "defines") {
-      ctx.strokeStyle = isConnectedToHover ? "rgba(16, 185, 129, 0.85)" : "rgba(255, 255, 255, 0.12)";
-      ctx.lineWidth = isConnectedToHover ? 2 : 1;
-      ctx.setLineDash([2, 3]);
-      ctx.lineTo(tgt.x, tgt.y);
-      ctx.stroke();
-      ctx.setLineDash([]);
-    } else if (edge.type === "contains") {
-      ctx.strokeStyle = isConnectedToHover ? "rgba(56, 189, 248, 0.95)" : "rgba(56, 189, 248, 0.35)";
-      ctx.lineWidth = isConnectedToHover ? 2.2 : 1.2;
-      ctx.setLineDash([3, 4]);
-      ctx.lineTo(tgt.x, tgt.y);
-      ctx.stroke();
-      ctx.setLineDash([]);
+  network.on("doubleClick", (params) => {
+    if (params.nodes.length > 0) {
+      const nodeId = params.nodes[0];
+      const nodeItem = nodesDS.get(nodeId);
+      if (nodeItem && nodeItem._raw) {
+        openNodeInEditor(nodeItem._raw);
+      }
     } else {
-      const dx = tgt.x - src.x;
-      const dy = tgt.y - src.y;
-      const cx = (src.x + tgt.x) / 2 - dy * 0.15;
-      const cy = (src.y + tgt.y) / 2 + dx * 0.15;
-
-      const isCall = edge.type === "calls";
-      const edgeColor = isCall
-        ? (isConnectedToHover ? "rgba(168, 85, 247, 0.95)" : "rgba(168, 85, 247, 0.5)")
-        : (isConnectedToHover ? "rgba(59, 130, 246, 0.95)" : "rgba(59, 130, 246, 0.5)");
-
-      ctx.strokeStyle = edgeColor;
-      ctx.lineWidth = isConnectedToHover ? 2.5 : 1.4;
-      ctx.quadraticCurveTo(cx, cy, tgt.x, tgt.y);
-      ctx.stroke();
-
-      const angle = Math.atan2(tgt.y - cy, tgt.x - cx);
-      const arrowLen = 6;
-      ctx.beginPath();
-      ctx.moveTo(tgt.x, tgt.y);
-      ctx.lineTo(tgt.x - arrowLen * Math.cos(angle - Math.PI / 6), tgt.y - arrowLen * Math.sin(angle - Math.PI / 6));
-      ctx.lineTo(tgt.x - arrowLen * Math.cos(angle + Math.PI / 6), tgt.y - arrowLen * Math.sin(angle + Math.PI / 6));
-      ctx.closePath();
-      ctx.fillStyle = ctx.strokeStyle;
-      ctx.fill();
+      toggleSchematicFullscreen();
     }
   });
 
-  // 2. Draw Nodes
-  schematicGraphState.nodes.forEach((node) => {
-    const isHovered = hovered === node;
-    const isFolder = node.type === "folder";
-    const isFile = node.type === "file";
-    const isFunc = node.type === "function";
-    const isClass = node.type === "class";
-
-    const nw = node.width || (isFolder ? 85 : isFile ? 80 : 60);
-    const nh = node.height || (isFolder ? 28 : isFile ? 26 : 18);
-    const nx = node.x - nw / 2;
-    const ny = node.y - nh / 2;
-    const r = isFolder ? 8 : isFile ? 6 : 9;
-
-    ctx.beginPath();
-    ctx.roundRect(nx, ny, nw, nh, r);
-
-    if (isFolder) {
-      ctx.fillStyle = isHovered ? "#0c2b3e" : "#081b29";
-      ctx.strokeStyle = isHovered ? "#38bdf8" : "#0284c7";
-      ctx.lineWidth = isHovered ? 2.2 : 1.4;
-    } else if (isFile) {
-      if (node.is_entry) {
-        ctx.fillStyle = isHovered ? "#3b1720" : "#241419";
-        ctx.strokeStyle = isHovered ? "#f43f5e" : "#e11d48";
-      } else {
-        ctx.fillStyle = isHovered ? "#172554" : "#0f172a";
-        ctx.strokeStyle = isHovered ? "#60a5fa" : "#3b82f6";
-      }
-      ctx.lineWidth = isHovered ? 2.2 : 1.2;
-    } else if (isFunc) {
-      ctx.fillStyle = isHovered ? "#064e3b" : "#022c22";
-      ctx.strokeStyle = isHovered ? "#34d399" : "#10b981";
-      ctx.lineWidth = isHovered ? 2 : 1;
-    } else if (isClass) {
-      ctx.fillStyle = isHovered ? "#78350f" : "#451a03";
-      ctx.strokeStyle = isHovered ? "#fbbf24" : "#f59e0b";
-      ctx.lineWidth = isHovered ? 2 : 1;
-    }
-
-    ctx.fill();
-    ctx.stroke();
-
-    ctx.fillStyle = isHovered ? "#ffffff" : "#e2e8f0";
-    ctx.font = isFolder ? "bold 11px Inter, sans-serif" : isFile ? "bold 10.5px Inter, sans-serif" : "9px JetBrains Mono, monospace";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-
-    let label = isFolder ? `📁 ${node.label}` : (node.label || node.id);
-    if (label.length > 15) label = label.slice(0, 13) + "…";
-    ctx.fillText(label, node.x, node.y + (isFolder || isFile ? 0 : 0.5));
-  });
-
-  ctx.restore();
-  ctx.restore();
+  renderGraphifyLegend(graphifyState.legend);
+  updateGraphifyStatsFooter();
 }
 
-function scrollEditorToLine(lineNumber = 1, targetSymbol = "") {
-  const editor = $("codeEditor");
-  if (!editor || !editor.value) return;
+function showGraphifyNodeInfo(nodeId) {
+  const contentEl = $("graphifyInspectorContent");
+  if (!contentEl || !graphifyState.nodesDS || !graphifyState.network) return;
 
-  const lines = editor.value.split("\n");
-  let targetLineIdx = Math.max(0, Math.min(lines.length - 1, lineNumber - 1));
+  const item = graphifyState.nodesDS.get(nodeId);
+  if (!item) return;
+  const n = item._raw || item;
 
-  if (targetSymbol) {
-    if (!lines[targetLineIdx].includes(targetSymbol)) {
-      const foundIdx = lines.findIndex((l) =>
-        l.includes(`def ${targetSymbol}`) ||
-        l.includes(`class ${targetSymbol}`) ||
-        l.includes(`function ${targetSymbol}`) ||
-        l.includes(targetSymbol)
-      );
-      if (foundIdx !== -1) {
-        targetLineIdx = foundIdx;
+  const neighborIds = graphifyState.network.getConnectedNodes(nodeId);
+  const neighborItems = neighborIds.slice(0, 20).map((nid) => {
+    const nb = graphifyState.nodesDS.get(nid);
+    const label = nb ? nb.label : nid;
+    return `<button class="neighbor-link" data-nid="${escapeHtml(String(nid))}">⤿ ${escapeHtml(label)}</button>`;
+  }).join("");
+
+  const typeName = n.file_type || n.type || "symbol";
+  const commName = n.community_name || (n.community !== undefined ? `Cluster ${n.community}` : "Core");
+  const sourcePath = n.source_file || n.full_path || n.file_path || n.id || "";
+  const degree = n.degree || neighborIds.length || 0;
+
+  contentEl.innerHTML = `
+    <div class="inspector-node-title">${escapeHtml(n.label || n.id)}</div>
+    <div class="inspector-badge-row">
+      <span class="inspector-badge">${escapeHtml(typeName)}</span>
+      <span class="inspector-badge" style="color:#a78bfa">${escapeHtml(commName)}</span>
+      <span class="inspector-badge" style="color:#38bdf8">${degree} links</span>
+    </div>
+    <div class="inspector-path" title="Click to open file in editor" id="inspectorOpenPath">
+      📄 ${escapeHtml(sourcePath)}
+    </div>
+    ${neighborIds.length > 0 ? `
+      <div class="inspector-connections-title">Connections (${neighborIds.length}):</div>
+      <div class="inspector-neighbor-list">${neighborItems}</div>
+    ` : ""}
+  `;
+
+  const pathBtn = $("inspectorOpenPath");
+  if (pathBtn) {
+    pathBtn.addEventListener("click", () => {
+      openNodeInEditor(n);
+    });
+  }
+
+  contentEl.querySelectorAll(".neighbor-link").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const nid = btn.getAttribute("data-nid");
+      if (nid) focusGraphifyNode(nid);
+    });
+  });
+}
+
+function focusGraphifyNode(nodeId) {
+  if (!graphifyState.network || !graphifyState.nodesDS) return;
+  graphifyState.network.focus(nodeId, {
+    scale: 1.4,
+    animation: {
+      duration: 600,
+      easingFunction: "easeInOutQuad",
+    },
+  });
+  graphifyState.network.selectNodes([nodeId]);
+  showGraphifyNodeInfo(nodeId);
+}
+
+function renderGraphifyLegend(legend) {
+  const legendEl = $("graphifyCommunityLegend");
+  if (!legendEl) return;
+
+  if (!legend || !legend.length) {
+    legendEl.innerHTML = `<span class="inspector-empty">No clusters detected</span>`;
+    return;
+  }
+
+  legendEl.innerHTML = legend.map((c) => `
+    <label class="community-legend-item" data-cid="${c.cid}">
+      <input type="checkbox" checked data-cid="${c.cid}">
+      <span class="community-swatch" style="background:${c.color}"></span>
+      <span class="community-label" title="${escapeHtml(c.label)}">${escapeHtml(c.label)}</span>
+      <span class="community-count">(${c.count})</span>
+    </label>
+  `).join("");
+
+  legendEl.querySelectorAll("input[type='checkbox']").forEach((cb) => {
+    cb.addEventListener("change", (e) => {
+      const cid = parseInt(cb.getAttribute("data-cid"), 10);
+      const isChecked = cb.checked;
+      if (isChecked) {
+        graphifyState.hiddenCommunities.delete(cid);
+      } else {
+        graphifyState.hiddenCommunities.add(cid);
       }
+      if (graphifyState.nodesDS && graphifyState.rawNodes) {
+        const updates = graphifyState.rawNodes
+          .filter((n) => n.community === cid)
+          .map((n) => ({ id: n.id, hidden: !isChecked }));
+        graphifyState.nodesDS.update(updates);
+      }
+    });
+  });
+}
+
+function updateGraphifyStatsFooter() {
+  const footer = $("graphifyStatsFooter");
+  if (!footer) return;
+  const nodesCount = graphifyState.rawNodes.length;
+  const edgesCount = graphifyState.rawEdges.length;
+  const commsCount = graphifyState.legend.length;
+  footer.textContent = `${nodesCount} nodes · ${edgesCount} edges · ${commsCount} clusters`;
+}
+
+function toggleSchematicFullscreen() {
+  const box = $("schematicGraphBox");
+  if (!box) return;
+  graphifyState.isFullscreen = !graphifyState.isFullscreen;
+  box.classList.toggle("fullscreen", graphifyState.isFullscreen);
+
+  let backdrop = document.querySelector(".schematic-backdrop");
+  if (graphifyState.isFullscreen) {
+    if (!backdrop) {
+      backdrop = document.createElement("div");
+      backdrop.className = "schematic-backdrop";
+      backdrop.addEventListener("click", toggleSchematicFullscreen);
+      document.body.appendChild(backdrop);
     }
+    const exp = $("schematicExpandIcon");
+    const cmp = $("schematicCompressIcon");
+    if (exp) exp.style.display = "none";
+    if (cmp) cmp.style.display = "block";
+  } else {
+    if (backdrop) backdrop.remove();
+    const exp = $("schematicExpandIcon");
+    const cmp = $("schematicCompressIcon");
+    if (exp) exp.style.display = "block";
+    if (cmp) cmp.style.display = "none";
   }
 
-  let charStart = 0;
-  for (let i = 0; i < targetLineIdx; i++) {
-    charStart += lines[i].length + 1;
-  }
-  let charEnd = charStart + lines[targetLineIdx].length;
-
-  if (targetSymbol) {
-    const symIdx = lines[targetLineIdx].indexOf(targetSymbol);
-    if (symIdx !== -1) {
-      charStart += symIdx;
-      charEnd = charStart + targetSymbol.length;
+  setTimeout(() => {
+    if (graphifyState.network) {
+      graphifyState.network.fit({ animation: true });
     }
-  }
-
-  editor.focus();
-  try {
-    editor.setSelectionRange(charStart, charEnd);
-  } catch (_) {}
-
-  const totalLines = Math.max(1, lines.length);
-  const avgLineHeight = editor.scrollHeight / totalLines;
-  const targetScrollTop = Math.max(0, targetLineIdx * avgLineHeight - (editor.clientHeight / 2 - 40));
-
-  editor.scrollTop = targetScrollTop;
-  syncEditorHighlightScroll();
+  }, 100);
 }
 
 async function openNodeInEditor(node) {
   if (!node) return;
-  if (node.type === "folder") {
+  if (node.file_type === "folder" || node.type === "folder") {
     showWorkbench();
     setActiveActivity("Files");
     activateTab("files");
     return;
   }
-  const filePath = node.type === "file" ? (node.full_path || node.id) : node.file_path;
+  const filePath = node.source_file || node.full_path || (node.file_type === "file" ? node.id : node.file_path) || node.id;
   if (!filePath) return;
 
   const startLine = node.start_line || 1;
-  const symbol = node.type !== "file" ? node.label : "";
+  const symbol = (node.file_type !== "file" && node.type !== "file") ? node.label : "";
 
   showWorkbench();
   setActiveActivity("Files");
@@ -3293,90 +3308,41 @@ async function openNodeInEditor(node) {
 }
 
 function initSchematicArchitectureGraph() {
-  const container = $("schematicCanvasContainer");
-  const box = $("schematicGraphBox");
-  const canvas = $("schematicCanvas");
-  const tooltip = $("schematicTooltip");
-  const toggleBtn = $("toggleSchematicFullscreen");
+  const searchInput = $("graphifySearchInput");
+  const searchDropdown = $("graphifySearchResults");
+  const physicsBtn = $("toggleGraphifyPhysics");
+  const fitBtn = $("fitGraphifyGraph");
+  const standaloneBtn = $("openGraphifyStandalone");
   const refreshBtn = $("refreshSchematicGraph");
+  const fullscreenBtn = $("toggleSchematicFullscreen");
 
-  if (!container || !canvas || !box) return;
-
-  function getGraphCoords(e) {
-    const rect = canvas.getBoundingClientRect();
-    const clientX = e.clientX - rect.left;
-    const clientY = e.clientY - rect.top;
-    const { x, y, scale } = schematicGraphState.transform;
-    return {
-      gx: (clientX - x) / scale,
-      gy: (clientY - y) / scale,
-      screenX: e.clientX,
-      screenY: e.clientY,
-      localX: clientX,
-      localY: clientY,
-    };
-  }
-
-  function findNodeAt(gx, gy) {
-    for (let i = schematicGraphState.nodes.length - 1; i >= 0; i--) {
-      const n = schematicGraphState.nodes[i];
-      const nw = (n.width || 60) / 2;
-      const nh = (n.height || 20) / 2;
-      if (gx >= n.x - nw && gx <= n.x + nw && gy >= n.y - nh && gy <= n.y + nh) {
-        return n;
-      }
-    }
-    return null;
-  }
-
-  const ro = new ResizeObserver(() => {
-    drawSchematicCanvas();
-  });
-  ro.observe(container);
-
-  function toggleFullscreen() {
-    schematicGraphState.isFullscreen = !schematicGraphState.isFullscreen;
-    box.classList.toggle("fullscreen", schematicGraphState.isFullscreen);
-
-    let backdrop = document.querySelector(".schematic-backdrop");
-    if (schematicGraphState.isFullscreen) {
-      if (!backdrop) {
-        backdrop = document.createElement("div");
-        backdrop.className = "schematic-backdrop";
-        backdrop.addEventListener("click", toggleFullscreen);
-        document.body.appendChild(backdrop);
-      }
-      $("schematicExpandIcon").style.display = "none";
-      $("schematicCompressIcon").style.display = "block";
-    } else {
-      if (backdrop) backdrop.remove();
-      $("schematicExpandIcon").style.display = "block";
-      $("schematicCompressIcon").style.display = "none";
-    }
-
-    setTimeout(() => {
-      fitSchematicView();
-      drawSchematicCanvas();
-    }, 50);
-  }
-
-  // Double click handler: node -> navigate directly to function in editor; canvas background -> fullscreen
-  box.addEventListener("dblclick", (e) => {
-    if (e.target.closest("button")) return;
-    const { gx, gy } = getGraphCoords(e);
-    const hitNode = findNodeAt(gx, gy);
-    if (hitNode) {
-      openNodeInEditor(hitNode);
+  if (physicsBtn) {
+    physicsBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      return;
-    }
-    toggleFullscreen();
-  });
+      if (!graphifyState.network) return;
+      graphifyState.physicsEnabled = !graphifyState.physicsEnabled;
+      graphifyState.network.setOptions({ physics: { enabled: graphifyState.physicsEnabled } });
+      const pText = $("graphifyPhysicsText");
+      if (pText) {
+        pText.textContent = graphifyState.physicsEnabled ? "Physics (Live)" : "Physics";
+      }
+      physicsBtn.classList.toggle("active", graphifyState.physicsEnabled);
+    });
+  }
 
-  if (toggleBtn) {
-    toggleBtn.addEventListener("click", (e) => {
+  if (fitBtn) {
+    fitBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      toggleFullscreen();
+      if (graphifyState.network) {
+        graphifyState.network.fit({ animation: { duration: 500, easingFunction: "easeInOutQuad" } });
+      }
+    });
+  }
+
+  if (standaloneBtn) {
+    standaloneBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      window.open("/api/graph/graphify.html", "_blank");
     });
   }
 
@@ -3387,93 +3353,58 @@ function initSchematicArchitectureGraph() {
     });
   }
 
-  window.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && schematicGraphState.isFullscreen) {
-      toggleFullscreen();
-    }
-  });
+  if (fullscreenBtn) {
+    fullscreenBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleSchematicFullscreen();
+    });
+  }
 
-  container.addEventListener("mousedown", (e) => {
-    if (e.button !== 0) return;
-    const { gx, gy, localX, localY } = getGraphCoords(e);
-    const hitNode = findNodeAt(gx, gy);
-
-    if (hitNode) {
-      schematicGraphState.dragTarget = hitNode;
-      schematicGraphState.dragStart = { x: gx - hitNode.x, y: gy - hitNode.y };
-    } else {
-      schematicGraphState.isDragging = true;
-      schematicGraphState.dragStart = { x: localX - schematicGraphState.transform.x, y: localY - schematicGraphState.transform.y };
-    }
-  });
-
-  window.addEventListener("mousemove", (e) => {
-    const { gx, gy, localX, localY } = getGraphCoords(e);
-
-    if (schematicGraphState.dragTarget) {
-      schematicGraphState.dragTarget.x = gx - schematicGraphState.dragStart.x;
-      schematicGraphState.dragTarget.y = gy - schematicGraphState.dragStart.y;
-      drawSchematicCanvas();
-      return;
-    }
-
-    if (schematicGraphState.isDragging) {
-      schematicGraphState.transform.x = localX - schematicGraphState.dragStart.x;
-      schematicGraphState.transform.y = localY - schematicGraphState.dragStart.y;
-      drawSchematicCanvas();
-      return;
-    }
-
-    const hitNode = findNodeAt(gx, gy);
-    if (hitNode !== schematicGraphState.hoveredNode) {
-      schematicGraphState.hoveredNode = hitNode;
-      drawSchematicCanvas();
-
-      if (hitNode && tooltip) {
-        let text = `<strong>${escapeHtml(hitNode.label)}</strong> (${hitNode.type})`;
-        if (hitNode.type === "folder") {
-          text = `<strong>📁 ${escapeHtml(hitNode.label)}</strong> (Folder)<br><span style="color:var(--muted)">Path: ${escapeHtml(hitNode.full_path || "")}</span>`;
-        } else if (hitNode.type === "file") {
-          text += `<br><span style="color:var(--muted)">Symbols: ${hitNode.symbols_count}</span>`;
-          if (hitNode.is_entry) text += `<br><span style="color:var(--danger)">★ Entry Point</span>`;
-          if (hitNode.docstring) text += `<br><span style="font-size:9.5px;color:var(--text-dim)">${escapeHtml(hitNode.docstring.slice(0, 100))}</span>`;
-        } else {
-          text += `<br><span style="color:var(--muted)">In: ${escapeHtml(hitNode.file_path || "")}</span>`;
-          if (hitNode.start_line) text += `<br><span style="color:var(--text-dim)">Line: ${hitNode.start_line}</span>`;
-        }
-        tooltip.innerHTML = text;
-        tooltip.style.left = `${Math.min(localX + 12, container.clientWidth - 180)}px`;
-        tooltip.style.top = `${Math.min(localY + 12, container.clientHeight - 80)}px`;
-        tooltip.style.display = "block";
-      } else if (tooltip) {
-        tooltip.style.display = "none";
+  if (searchInput && searchDropdown) {
+    searchInput.addEventListener("input", () => {
+      const q = searchInput.value.trim().toLowerCase();
+      if (!q) {
+        searchDropdown.style.display = "none";
+        searchDropdown.innerHTML = "";
+        return;
       }
-    }
-  });
+      const matches = (graphifyState.rawNodes || [])
+        .filter((n) => (n.label || "").toLowerCase().includes(q) || (n.id || "").toLowerCase().includes(q))
+        .slice(0, 15);
 
-  window.addEventListener("mouseup", () => {
-    schematicGraphState.isDragging = false;
-    schematicGraphState.dragTarget = null;
-  });
+      if (!matches.length) {
+        searchDropdown.style.display = "block";
+        searchDropdown.innerHTML = `<div style="padding:6px;color:var(--muted);font-size:11px;text-align:center">No matching symbols</div>`;
+        return;
+      }
 
-  container.addEventListener("wheel", (e) => {
-    e.preventDefault();
-    const { localX, localY } = getGraphCoords(e);
-    const zoomFactor = e.deltaY < 0 ? 1.15 : 0.87;
-    const newScale = Math.max(0.2, Math.min(3.5, schematicGraphState.transform.scale * zoomFactor));
+      searchDropdown.style.display = "block";
+      searchDropdown.innerHTML = matches.map((m) => `
+        <div class="graphify-search-item" data-nid="${escapeHtml(String(m.id))}">
+          <span class="graphify-search-item-label">${escapeHtml(m.label || m.id)}</span>
+          <span class="graphify-search-item-type">${escapeHtml(m.file_type || m.type || "file")}</span>
+        </div>
+      `).join("");
+    });
 
-    schematicGraphState.transform.x = localX - (localX - schematicGraphState.transform.x) * (newScale / schematicGraphState.transform.scale);
-    schematicGraphState.transform.y = localY - (localY - schematicGraphState.transform.y) * (newScale / schematicGraphState.transform.scale);
-    schematicGraphState.transform.scale = newScale;
+    searchDropdown.addEventListener("click", (e) => {
+      const item = e.target.closest(".graphify-search-item");
+      if (item && item.dataset.nid) {
+        focusGraphifyNode(item.dataset.nid);
+        searchDropdown.style.display = "none";
+      }
+    });
 
-    drawSchematicCanvas();
-  }, { passive: false });
+    document.addEventListener("click", (e) => {
+      if (!e.target.closest(".graphify-search-wrap")) {
+        searchDropdown.style.display = "none";
+      }
+    });
+  }
 
-  container.addEventListener("click", (e) => {
-    const { gx, gy } = getGraphCoords(e);
-    const hitNode = findNodeAt(gx, gy);
-    if (hitNode) {
-      openNodeInEditor(hitNode);
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && graphifyState.isFullscreen) {
+      toggleSchematicFullscreen();
     }
   });
 }

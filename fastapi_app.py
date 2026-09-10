@@ -584,6 +584,18 @@ def create_app() -> FastAPI:
         ws = request.query_params.get("workspace_path") or get_workspace()
         return code_graph_service.get_stats(ws)
 
+    @app.get("/api/graph/graphify.html")
+    async def get_graphify_html(request: Request):
+        ws = request.query_params.get("workspace_path") or get_workspace()
+        html = code_graph_service.generate_graphify_html(ws)
+        return HTMLResponse(html, media_type="text/html")
+
+    @app.get("/api/graph/graphify-data")
+    async def get_graphify_data(request: Request):
+        ws = request.query_params.get("workspace_path") or get_workspace()
+        max_n = int(request.query_params.get("max_nodes", "250"))
+        return code_graph_service.get_graphify_payload(ws, max_nodes=max_n)
+
     @app.get("/api/browse")
     @app.post("/api/browse")
     async def browse_folder(request: Request):

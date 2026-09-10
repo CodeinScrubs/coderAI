@@ -174,3 +174,70 @@ def test_schematic_graph_integration():
             assert "source" in e
             assert "target" in e
             assert "type" in e
+
+
+def test_graphify_payload_and_html_generation():
+    """Verify get_graphify_payload and generate_graphify_html for Vis-Network physics engine."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+        test_py = os.path.join(tmpdir, "calculator.py")
+        with open(test_py, "w", encoding="utf-8") as f:
+            f.write(
+                "class Calculator:\n"
+                "    def add(self, a, b):\n"
+                "        return a + b\n\n"
+                "def compute():\n"
+                "    c = Calculator()\n"
+                "    return c.add(10, 20)\n"
+            )
+
+        # 1. Test get_graphify_payload
+        payload = code_graph_service.get_graphify_payload(tmpdir)
+        assert isinstance(payload, dict)
+        assert "nodes" in payload
+        assert "edges" in payload
+        assert "legend" in payload
+        assert "stats" in payload
+        assert payload.get("source") == "graphify"
+        assert len(payload["nodes"]) > 0
+
+        # Verify node fields comply with Vis-Network
+        for n in payload["nodes"]:
+            assert "id" in n
+            assert "label" in n
+            assert "color" in n
+            assert "size" in n
+            assert "community" in n
+
+        # 2. Test generate_graphify_html
+        html = code_graph_service.generate_graphify_html(tmpdir)
+        assert isinstance(html, str)
+        assert "vis.Network" in html
+        assert "forceAtlas2Based" in html
+        assert "Node Inspector" in html
+        assert "Communities" in html
+
+
+def test_fastapi_graphify_endpoints():
+    """Verify FastAPI routes for Graphify standalone HTML and data."""
+    app = create_app()
+    client = TestClient(app)
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+        test_py = os.path.join(tmpdir, "app.py")
+        with open(test_py, "w", encoding="utf-8") as f:
+            f.write("def start():\n    return 'started'\n")
+
+        # 1. GET /api/graph/graphify-data
+        resp_data = client.get(f"/api/graph/graphify-data?workspace_path={tmpdir}")
+        assert resp_data.status_code == 200
+        json_data = resp_data.json()
+        assert "nodes" in json_data
+        assert "edges" in json_data
+        assert "legend" in json_data
+
+        # 2. GET /api/graph/graphify.html
+        resp_html = client.get(f"/api/graph/graphify.html?workspace_path={tmpdir}")
+        assert resp_html.status_code == 200
+        assert "text/html" in resp_html.headers.get("content-type", "")
+        assert "vis.Network" in resp_html.text
+

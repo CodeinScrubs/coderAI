@@ -1803,13 +1803,13 @@ body.loading .loading-overlay { display: block; }
   .statusbar { gap: 10px; }
 }
 
-/* ── Schematic Architecture & Function Graph ──────────────────── */
+/* ── Schematic Architecture & Graphify Knowledge Graph ──────────── */
 
 .schematic-graph-box {
   display: flex;
   flex-direction: column;
-  height: 250px;
-  min-height: 180px;
+  height: 380px;
+  min-height: 240px;
   margin: 6px 8px 10px;
   border: 1px solid var(--line);
   border-radius: var(--r-md);
@@ -1831,7 +1831,6 @@ body.loading .loading-overlay { display: block; }
   background: var(--panel-3);
   border-bottom: 1px solid var(--line);
   font-size: 11px;
-  cursor: pointer;
 }
 
 .schematic-graph-title {
@@ -1849,29 +1848,127 @@ body.loading .loading-overlay { display: block; }
   color: var(--accent-dim);
 }
 
+.graphify-badge {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+}
+
 .schematic-graph-controls {
   display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.schematic-graph-controls button {
+  height: 24px;
+  padding: 0 6px;
+  font-size: 11px;
+  display: inline-flex;
   align-items: center;
   gap: 4px;
 }
 
-.schematic-canvas-container {
+.schematic-graph-controls button.icon-only {
+  width: 24px;
+  padding: 0;
+  justify-content: center;
+}
+
+/* Graphify Search */
+.graphify-search-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+#graphifySearchInput {
+  height: 24px;
+  width: 130px;
+  background: #181a20;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  font-size: 11px;
+  padding: 0 8px;
+  transition: width 0.2s ease, border-color 0.15s ease;
+}
+
+#graphifySearchInput:focus {
+  width: 175px;
+  border-color: #007acc;
+  outline: none;
+}
+
+.graphify-search-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  width: 230px;
+  max-height: 200px;
+  overflow-y: auto;
+  background: #1e222b;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+  z-index: 100;
+  padding: 4px;
+}
+
+.graphify-search-item {
+  padding: 5px 8px;
+  font-size: 11px;
+  color: var(--text);
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.graphify-search-item:hover,
+.graphify-search-item.active {
+  background: rgba(0, 122, 204, 0.25);
+  color: #38bdf8;
+}
+
+.graphify-search-item-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.graphify-search-item-type {
+  font-size: 9px;
+  color: var(--muted);
+  text-transform: uppercase;
+  font-family: var(--mono);
+}
+
+/* Main Graphify Layout (Viewport + Sidebar) */
+.graphify-main-layout {
   flex: 1;
   min-height: 0;
+  display: flex;
   position: relative;
-  background: #111317;
-  cursor: grab;
+  background: #101216;
   overflow: hidden;
 }
 
-.schematic-canvas-container:active {
-  cursor: grabbing;
-}
-
-.schematic-canvas-container canvas {
-  width: 100%;
+.graphify-network-viewport {
+  flex: 1 1 0%;
   height: 100%;
-  display: block;
+  min-width: 0;
+  position: relative;
+  outline: none;
 }
 
 .schematic-empty {
@@ -1885,22 +1982,175 @@ body.loading .loading-overlay { display: block; }
   font-family: var(--mono);
   background: rgba(17, 19, 23, 0.7);
   pointer-events: none;
+  z-index: 5;
 }
 
-.schematic-tooltip {
-  position: absolute;
-  z-index: 50;
-  pointer-events: none;
-  background: rgba(22, 24, 30, 0.95);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r-sm);
-  padding: 6px 10px;
+.graphify-inspector-sidebar {
+  width: 220px;
+  min-width: 180px;
+  max-width: 260px;
+  border-left: 1px solid var(--line);
+  background: #14171e;
+  display: flex;
+  flex-direction: column;
+  z-index: 10;
+  overflow-y: auto;
   font-size: 11px;
+}
+
+.inspector-section {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.inspector-title {
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.inspector-content {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.inspector-empty {
+  color: var(--muted);
+  font-style: italic;
+  font-size: 10.5px;
+}
+
+.inspector-node-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #f3f4f6;
+  word-break: break-all;
+}
+
+.inspector-badge-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.inspector-badge {
+  font-size: 9.5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: #1f2430;
+  color: #93c5fd;
+  border: 1px solid #334155;
+}
+
+.inspector-path {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--muted);
+  word-break: break-all;
+  background: #0d0f13;
+  padding: 4px 6px;
+  border-radius: 4px;
+  border: 1px solid #242936;
+  cursor: pointer;
+}
+
+.inspector-path:hover {
+  color: #38bdf8;
+  border-color: #38bdf8;
+}
+
+.inspector-connections-title {
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+
+.inspector-neighbor-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 100px;
+  overflow-y: auto;
+}
+
+.neighbor-link {
+  font-size: 10px;
+  color: #38bdf8;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
+  background: transparent;
+  border: none;
+  display: block;
+}
+
+.neighbor-link:hover {
+  background: rgba(56, 189, 248, 0.15);
+  text-decoration: underline;
+}
+
+.community-legend-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.community-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
   color: var(--text);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
-  max-width: 280px;
-  white-space: pre-wrap;
-  backdrop-filter: blur(8px);
+  cursor: pointer;
+  user-select: none;
+}
+
+.community-legend-item input[type="checkbox"] {
+  accent-color: #007acc;
+  cursor: pointer;
+  margin: 0;
+}
+
+.community-swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.community-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.community-count {
+  font-size: 9px;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+
+.inspector-footer {
+  margin-top: auto;
+  padding: 6px 10px;
+  border-top: 1px solid var(--line);
+  font-size: 9.5px;
+  font-family: var(--mono);
+  color: var(--muted);
+  background: #111317;
+  text-align: center;
 }
 
 .schematic-legend {
@@ -1908,7 +2158,7 @@ body.loading .loading-overlay { display: block; }
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
-  padding: 5px 10px;
+  padding: 4px 10px;
   background: var(--panel-3);
   border-top: 1px solid var(--line);
   font-size: 10px;
@@ -1929,9 +2179,10 @@ body.loading .loading-overlay { display: block; }
 }
 
 .chip-folder .dot { background: #38bdf8; }
-.chip-file .dot { background: #3b82f6; }
+.chip-file .dot { background: #38bdf8; }
 .chip-func .dot { background: #10b981; }
-.chip-class .dot { background: #f59e0b; }
+.chip-class .dot { background: #fbbf24; }
+.chip-call .dot { background: #a855f7; }
 
 .legend-hint {
   margin-left: auto;
@@ -1940,7 +2191,7 @@ body.loading .loading-overlay { display: block; }
   opacity: 0.8;
 }
 
-/* Fullscreen Mode (triggered on double click or button) */
+/* Fullscreen Mode */
 .schematic-graph-box.fullscreen {
   position: fixed !important;
   inset: 20px !important;
@@ -1956,7 +2207,7 @@ body.loading .loading-overlay { display: block; }
   animation: schematicZoomIn .2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.schematic-graph-box.fullscreen .schematic-canvas-container {
+.schematic-graph-box.fullscreen .graphify-main-layout {
   height: calc(100vh - 120px) !important;
 }
 

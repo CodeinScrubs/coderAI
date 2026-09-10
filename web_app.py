@@ -2243,6 +2243,20 @@ class Handler(BaseHTTPRequestHandler):
             index = CodebaseIndex(get_workspace())
             _send_json(self, index.get_schematic_graph())
             return
+        if path == "/api/graph/graphify.html":
+            from code_graph_service import code_graph_service
+            html = code_graph_service.generate_graphify_html(get_workspace())
+            encoded = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+            return
+        if path == "/api/graph/graphify-data":
+            from code_graph_service import code_graph_service
+            _send_json(self, code_graph_service.get_graphify_payload(get_workspace()))
+            return
         if path == "/api/projects":
             _send_json(self, {"projects": _project_cards()})
             return
