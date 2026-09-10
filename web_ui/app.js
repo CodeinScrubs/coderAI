@@ -26,8 +26,6 @@ function installEditorMetricStyles() {
   const style = document.createElement("style");
   style.id = "editorMetricStyles";
   style.textContent = `
-    .code-highlight,
-    .code-highlight code,
     .code-editor {
       font-family: Consolas, "SFMono-Regular", "Cascadia Mono", "IBM Plex Mono", ui-monospace, monospace !important;
       font-size: 13px !important;
@@ -41,19 +39,17 @@ function installEditorMetricStyles() {
       white-space: pre !important;
       overflow-wrap: normal !important;
       word-break: normal !important;
-    }
-    .code-highlight,
-    .code-editor {
-      padding: 16px 16px 16px 62px !important;
+      padding: 16px 16px 16px 58px !important;
       overflow: auto !important;
-    }
-    .code-highlight code {
-      display: block !important;
-      min-width: max-content !important;
-    }
-    .code-editor {
+      color: #e4e4e7 !important;
+      background: #181818 !important;
+      caret-color: #38bdf8 !important;
       -webkit-text-size-adjust: 100%;
       text-size-adjust: 100%;
+    }
+    .code-editor::selection {
+      background: #264f78 !important;
+      color: #ffffff !important;
     }
   `;
   document.head.appendChild(style);
@@ -229,6 +225,19 @@ function highlightCode(code, info = "text") {
   return html;
 }
 
+function updateEditorLineNumbers() {
+  const editor = $("codeEditor");
+  const gutter = $("editorGutter");
+  if (!editor || !gutter) return;
+  const lines = editor.value ? editor.value.split("\n").length : 1;
+  let nums = "";
+  for (let i = 1; i <= Math.max(lines, 1); i++) {
+    nums += i + "\n";
+  }
+  gutter.textContent = nums;
+  gutter.scrollTop = editor.scrollTop;
+}
+
 function setCodeEditorContent(title, meta, content, info = "txt") {
   state.activeFile = title;
   state.fileContent = content || "";
@@ -241,20 +250,14 @@ function setCodeEditorContent(title, meta, content, info = "txt") {
   $("codeEditor").value = state.fileContent;
   $("codeEditor").disabled = false;
   $("codeEditorWrap").classList.toggle("empty", !state.fileContent);
-  renderCodeHighlight();
+  updateEditorLineNumbers();
   $("attachFile").disabled = !state.fileContent;
   $("downloadCode").disabled = !state.fileContent;
   updateTokenUsage();
 }
 
 function renderCodeHighlight() {
-  const code = $("codeEditor").value;
-  const visibleCode = code || "Select or generate code to edit it here.";
-  const highlight = $("codeHighlight");
-  if (highlight) {
-    highlight.innerHTML = `<code>${highlightCode(visibleCode, state.generatedInfo)}</code>`;
-  }
-  syncEditorHighlightScroll();
+  updateEditorLineNumbers();
 }
 
 function setCodePreview(title, meta, content, info = "txt") {
@@ -262,11 +265,10 @@ function setCodePreview(title, meta, content, info = "txt") {
 }
 
 function syncEditorHighlightScroll() {
-  const highlight = $("codeHighlight");
+  const gutter = $("editorGutter");
   const editor = $("codeEditor");
-  if (!highlight || !editor) return;
-  highlight.scrollTop = editor.scrollTop;
-  highlight.scrollLeft = editor.scrollLeft;
+  if (!gutter || !editor) return;
+  gutter.scrollTop = editor.scrollTop;
 }
 
 function activateTab(name) {
@@ -2483,14 +2485,78 @@ $("approvalReject").addEventListener("click", () => resolveApproval(false));
 $("codeEditor").addEventListener("input", () => {
   state.fileContent = $("codeEditor").value;
   state.editorDirty = true;
+  if (!state.activeFile || state.activeFile === "No file selected") {
+    $("activeFile").textContent = "Untitled";
+    $("fileMeta").textContent = `${state.fileContent.length.toLocaleString()} chars · editable`;
+  }
   $("downloadCode").disabled = !state.fileContent;
   $("attachFile").disabled = !state.fileContent;
   $("codeEditorWrap").classList.toggle("empty", !state.fileContent);
-  renderCodeHighlight();
+  updateEditorLineNumbers();
   updateTokenUsage();
 });
+
 $("codeEditor").addEventListener("scroll", () => {
   syncEditorHighlightScroll();
+});
+
+$("codeEditor").addEventListener("keydown", (e) => {
+  if (e.key === "Tab") {
+    e.preventDefault();
+    const editor = $("codeEditor");
+    const start = editor.selectionStart;
+    const end = editor.selectionEnd;
+    const val = editor.value;
+    editor.value = val.substring(0, start) + "  " + val.substring(end);
+    editor.selectionStart = editor.selectionEnd = start + 2;
+    state.fileContent = editor.value;
+    state.editorDirty = true;
+    $("downloadCode").disabled = !state.fileContent;
+    $("attachFile").disabled = !state.fileContent;
+    updateEditorLineNumbers();
+  }
+});
+
+$("copyEditorCode")?.addEventListener("click", async () => {
+  const text = $("codeEditor")?.value;
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    const btn = $("copyEditorCode");
+    const orig = btn.innerHTML;
+    btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><polyline points="20 6 9 17 4 12"/></svg> Copied!`;
+    setTimeout(() => { btn.innerHTML = orig; }, 1500);
+  } catch (_) {
+    $("codeEditor")?.select();
+    document.execCommand("copy");
+  }
+});
+
+$("pasteEditorCode")?.addEventListener("click", async () => {
+  try {
+    const text = await navigator.clipboard.readText();
+    if (text) {
+      const editor = $("codeEditor");
+      editor.focus();
+      const start = editor.selectionStart || 0;
+      const end = editor.selectionEnd || 0;
+      const val = editor.value;
+      editor.value = val.substring(0, start) + text + val.substring(end);
+      editor.selectionStart = editor.selectionEnd = start + text.length;
+      state.fileContent = editor.value;
+      state.editorDirty = true;
+      if (!state.activeFile || state.activeFile === "No file selected") {
+        $("activeFile").textContent = "Untitled";
+        $("fileMeta").textContent = `${state.fileContent.length.toLocaleString()} chars · editable`;
+      }
+      $("downloadCode").disabled = !state.fileContent;
+      $("attachFile").disabled = !state.fileContent;
+      updateEditorLineNumbers();
+      updateTokenUsage();
+    }
+  } catch (_) {
+    $("codeEditor")?.focus();
+  }
 });
 $("promptInput").addEventListener("input", (e) => {
   updateTokenUsage();

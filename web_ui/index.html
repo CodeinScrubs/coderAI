@@ -70,7 +70,7 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
         </button>
         <button class="activity-btn" type="button" title="Code Graph" aria-label="Graph">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="6" r="2.2" fill="currentColor"/><circle cx="19" cy="6" r="2.2" fill="currentColor"/><circle cx="12" cy="12" r="2.5" fill="currentColor"/><circle cx="5" cy="18" r="2.2" fill="currentColor"/><circle cx="19" cy="18" r="2.2" fill="currentColor"/><line x1="7.2" y1="6" x2="16.8" y2="6"/><line x1="6.5" y1="7.5" x2="10.5" y2="10.5"/><line x1="17.5" y1="7.5" x2="13.5" y2="10.5"/><line x1="5" y1="8.2" x2="5" y2="15.8"/><line x1="19" y1="8.2" x2="19" y2="15.8"/><line x1="10.5" y1="13.5" x2="6.5" y2="16.5"/><line x1="13.5" y1="13.5" x2="17.5" y2="16.5"/><line x1="7.2" y1="18" x2="16.8" y2="18"/></svg>
         </button>
         <button class="activity-btn" type="button" title="Agent" aria-label="Agent">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="7" width="16" height="12" rx="2"/><path d="M12 7V3"/><circle cx="9" cy="13" r="1"/><circle cx="15" cy="13" r="1"/></svg>
@@ -404,6 +404,14 @@
             <button id="showCodeTab" type="button" class="editor-tab active">Code</button>
             <button id="showGitTab" type="button" class="editor-tab">Git History</button>
             <span id="editorLanguage" class="editor-language">text</span>
+            <button id="copyEditorCode" type="button" class="ghost" title="Copy editor content to clipboard">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              Copy
+            </button>
+            <button id="pasteEditorCode" type="button" class="ghost" title="Paste from clipboard">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>
+              Paste
+            </button>
             <button id="downloadCode" type="button" class="ghost" disabled>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 11 5 5 5-5"/><path d="M5 21h14"/></svg>
               Download
@@ -415,8 +423,8 @@
           </div>
         </div>
         <div id="codeEditorWrap" class="code-editor-wrap editor-view active empty">
-          <pre id="codeHighlight" class="code-highlight" aria-hidden="true"><code> .</code></pre>
-          <textarea id="codeEditor" class="code-editor" spellcheck="false" wrap="off" placeholder="Select or generate code to edit it here." disabled></textarea>
+          <div id="editorGutter" class="editor-gutter">1</div>
+          <textarea id="codeEditor" class="code-editor" spellcheck="false" wrap="off" placeholder="Type or paste code here, or select a file from the workspace..."></textarea>
         </div>
         <div id="gitHistoryView" class="git-history-view editor-view">
           <!-- Git Toolbar -->
@@ -623,8 +631,7 @@
           <div class="code-graph-header-left">
             <div class="code-graph-title">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px;color:#38bdf8">
-                <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
-                <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+                <circle cx="5" cy="6" r="2.2" fill="currentColor"/><circle cx="19" cy="6" r="2.2" fill="currentColor"/><circle cx="12" cy="12" r="2.5" fill="currentColor"/><circle cx="5" cy="18" r="2.2" fill="currentColor"/><circle cx="19" cy="18" r="2.2" fill="currentColor"/><line x1="7.2" y1="6" x2="16.8" y2="6"/><line x1="6.5" y1="7.5" x2="10.5" y2="10.5"/><line x1="17.5" y1="7.5" x2="13.5" y2="10.5"/><line x1="5" y1="8.2" x2="5" y2="15.8"/><line x1="19" y1="8.2" x2="19" y2="15.8"/><line x1="10.5" y1="13.5" x2="6.5" y2="16.5"/><line x1="13.5" y1="13.5" x2="17.5" y2="16.5"/><line x1="7.2" y1="18" x2="16.8" y2="18"/>
               </svg>
               <strong>Architecture &amp; Knowledge Graph</strong>
               <span id="graphifyBadge" class="graphify-badge">Physics AST</span>

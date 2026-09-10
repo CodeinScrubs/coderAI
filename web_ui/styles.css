@@ -1300,25 +1300,65 @@ p, .editor-head span { color: var(--muted); font-size: 11px; }
 .diff-line.add { color: #b7e4c7; background: rgba(46, 160, 67, .15); }
 .diff-line.remove { color: #ffc9c9; background: rgba(248, 81, 73, .14); }
 .diff-line.meta { color: #79c0ff; }
-.code-editor-wrap::before {
-  content: "";
+.code-editor-wrap {
+  position: relative;
+  min-height: 0;
+  background: var(--editor, #181818);
+  overflow: hidden;
+  height: 100%;
+}
+.editor-gutter {
   position: absolute;
   inset: 0 auto 0 0;
   width: 48px;
-  z-index: 0;
+  z-index: 3;
+  padding: 16px 8px 16px 0;
   border-right: 1px solid #2b2b2b;
-  background: #1b1b1b;
+  background: #141414;
+  color: #52525b;
+  font-family: Consolas, "SFMono-Regular", "Cascadia Mono", monospace;
+  font-size: 12px;
+  line-height: 20px;
+  text-align: right;
+  overflow: hidden;
+  user-select: none;
+  pointer-events: none;
+  white-space: pre;
 }
-.code-highlight, .code-editor {
-  position: absolute; inset: 0; margin: 0; border: 0; border-radius: 0;
-  padding: 16px 16px 16px 62px; font-family: var(--mono); font-size: 12.5px; line-height: 1.65;
-  tab-size: 2; white-space: pre; overflow: auto;
+.code-editor {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  padding: 16px 16px 16px 58px;
+  background: var(--editor, #181818);
+  color: #e4e4e7;
+  caret-color: var(--accent, #38bdf8);
+  font-family: Consolas, "SFMono-Regular", "Cascadia Mono", monospace !important;
+  font-size: 13px !important;
+  line-height: 20px !important;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+  resize: none;
+  outline: none;
+  z-index: 2;
 }
-.code-highlight { z-index: 1; color: #d4d4d4; pointer-events: none; }
-.code-editor { z-index: 2; background: transparent; color: transparent; caret-color: var(--accent); resize: none; outline: none; min-height: 0; height: 100%; }
-.code-editor::selection { background: rgba(232, 163, 61, .22); color: transparent; }
-.code-editor:disabled { cursor: default; }
-.code-editor-wrap.empty .code-highlight { color: var(--muted); font-family: var(--sans); font-size: 12.5px; }
+.code-editor::placeholder {
+  color: var(--muted, #71717a);
+  font-style: italic;
+}
+.code-editor::selection {
+  background: #264f78 !important;
+  color: #ffffff !important;
+}
+.code-editor:focus {
+  outline: none;
+}
+.code-highlight {
+  display: none !important;
+}
 
 .tok-keyword { color: #c586c0; }
 .tok-string { color: #ce9178; }
