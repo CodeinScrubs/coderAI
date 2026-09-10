@@ -80,11 +80,11 @@ class TerminalSession:
 
     def get_shell_command_args(self) -> list[str]:
         if self.shell_type in {"cmd", "command prompt", "cmd.exe"}:
-            return ["cmd.exe"]
+            return ["cmd.exe", "/k"]
         if self.shell_type in {"bash", "git bash", "git-bash"}:
             bash_path = shutil.which("bash") or r"C:\Program Files\Git\bin\bash.exe"
             if os.path.exists(bash_path):
-                return [bash_path]
+                return [bash_path, "-i"]
         pwsh = shutil.which("pwsh") or shutil.which("powershell") or "powershell.exe"
         return [pwsh, "-NoLogo"]
 
@@ -96,7 +96,8 @@ class TerminalSession:
 
             shell_args = self.get_shell_command_args()
 
-            if HAS_WINPTY:
+            # For powershell and bash, winpty provides genuine pseudoterminal handling
+            if HAS_WINPTY and self.shell_type not in {"cmd", "command prompt", "cmd.exe"}:
                 try:
                     self.pty_proc = winpty.PtyProcess.spawn(
                         shell_args,
@@ -106,6 +107,17 @@ class TerminalSession:
                     self._is_running = True
                     self._reader_thread = threading.Thread(target=self._pty_reader, daemon=True)
                     self._reader_thread.start()
+
+                    # Kickstart initial prompt display
+                    def _kickstart() -> None:
+                        time.sleep(0.08)
+                        with self._lock:
+                            if self.pty_proc and self.pty_proc.isalive():
+                                try:
+                                    self.pty_proc.write("\r\n")
+                                except Exception:
+                                    pass
+                    threading.Thread(target=_kickstart, daemon=True).start()
                     return
                 except Exception as exc:
                     self.output_queue.put({"type": "output", "text": f"\r\n[WinPTY error: {exc}]\r\n", "data": f"\r\n[WinPTY error: {exc}]\r\n"})

@@ -1507,8 +1507,7 @@ function renderPrompts() {
 function isRTL(text) {
   const trimmed = String(text || "").trim();
   if (!trimmed) return false;
-  // Decimal digits are not direction votes, regardless of their script.
-  const clean = trimmed.replace(/[\p{Decimal_Number}\s.,!?:;"'()\[\]{}<>\/\\@#$%^&*_+=~`|-]/gu, "");
+  const clean = trimmed.replace(/[\d\s.,!?:;"'()\[\]{}<>\/\\@#$%^&*_+=~`|-]/g, "");
   if (!clean) return false;
   const rtlChars = clean.match(/[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/g) || [];
   return (rtlChars.length / clean.length) > 0.2;
@@ -1517,23 +1516,19 @@ function isRTL(text) {
 function renderMessages() {
   const messages = state.data?.messages || [];
   const toolsLog = state.data?.tools_log || [];
-  const currentSession = state.data?.memory?.persistent?.session_id;
-  const skillEvents = (state.data?.skill_usage?.recent || []).filter((event) => event.session_id === currentSession);
   $("messages").innerHTML = messages.map((msg, index) => {
     const assistantIndex = messages.slice(0, index + 1).filter((m) => m.role === "assistant").length - 1;
     const tools = msg.role === "assistant" && toolsLog[assistantIndex] ? toolsLog[assistantIndex] : [];
-    const turnEvents = msg.role === "assistant" ? skillEvents.filter((event) => event.turn_index === assistantIndex + 1 && ["selected", "applied", "failed"].includes(event.status)) : [];
-    const skillHtml = turnEvents.map((event) => `<div class="skill-event-box ${event.status === "failed" ? "failed" : ""}"><strong>${event.status === "selected" ? "Using skill" : event.status === "applied" ? "Skill applied" : "Skill failed"}: /${escapeHtml(event.skill_name)}</strong><span>${event.matched_keywords?.length ? `matched: ${event.matched_keywords.map((word) => `&quot;${escapeHtml(word)}&quot;`).join(", ")}` : escapeHtml(event.triggered_by)}</span></div>`).join("");
     const toolHtml = tools.length ? `<div class="tool-box">${escapeHtml(tools.map((t) =>
       `${t.name}(${JSON.stringify(t.args || {})})\n${String(t.result || "").slice(0, 1200)}`
     ).join("\n\n"))}</div>` : "";
     const isMsgRTL = isRTL(msg.content);
     const dirAttr = isMsgRTL ? "rtl" : "ltr";
+    const roleLabel = msg.role === "user" ? "You" : "Coder AI";
     return `
       <article class="message ${msg.role} ${dirAttr}" dir="${dirAttr}">
-        <span class="role">${msg.role}</span>
-        ${skillHtml}
-        ${renderMessageContent(msg)}
+        <div class="message-meta"><span class="role">${roleLabel}</span></div>
+        <div class="message-text">${renderMessageContent(msg)}</div>
         ${toolHtml}
       </article>
     `;
@@ -1664,8 +1659,8 @@ function setLoading(isLoading, text = "Working...") {
 
 function appendStreamingAssistant() {
   const article = document.createElement("article");
-  article.className = "message assistant streaming";
-  article.innerHTML = `<span class="role">assistant</span><span class="stream-content"></span>`;
+  article.className = "message assistant streaming ltr";
+  article.innerHTML = `<div class="message-meta"><span class="role">Coder AI</span></div><div class="message-text"><span class="stream-content"></span></div>`;
   $("messages").appendChild(article);
   $("messages").scrollTop = $("messages").scrollHeight;
   return article.querySelector(".stream-content");
@@ -1674,7 +1669,7 @@ function appendStreamingAssistant() {
 function appendToolStatus(name, text) {
   const article = document.createElement("article");
   article.className = "message assistant";
-  article.innerHTML = `<span class="role">tool</span><div class="tool-box">${escapeHtml(`${name}\n${text}`)}</div>`;
+  article.innerHTML = `<div class="message-meta"><span class="role">System Action</span></div><div class="tool-box">${escapeHtml(`${name}\n${text}`)}</div>`;
   $("messages").appendChild(article);
   $("messages").scrollTop = $("messages").scrollHeight;
 }
@@ -1811,13 +1806,7 @@ function renderRoutingNotice(id, routing) {
 }
 
 function appendSkillStatus(event) {
-  const article = document.createElement("article");
-  article.className = `message assistant skill-event ${event.type === "skill_failed" ? "failed" : ""}`;
-  const keywords = (event.matched_keywords || []).map((word) => `"${word}"`).join(", ");
-  const title = event.type === "skill_applied" ? "Skill applied" : event.type === "skill_failed" ? "Skill failed" : "Using skill";
-  article.innerHTML = `<span class="role">skill</span><div class="skill-event-box"><strong>${title}: /${escapeHtml(event.skill)}</strong><span>${escapeHtml(event.reason || (keywords ? `matched: ${keywords}` : ""))}</span></div>`;
-  $("messages").appendChild(article);
-  $("messages").scrollTop = $("messages").scrollHeight;
+  // Skills are hidden from chat feed per user request (kept in Skills tab / status bar)
 }
 
 async function openWorkspace() {
@@ -1996,7 +1985,7 @@ function dispatchStreamEvent(event, ctx) {
   } else if (event.type === "tool_result") {
     appendToolStatus(`${event.name} result`, String(event.result || "").slice(0, 1200));
   } else if (event.type === "skill_selected" || event.type === "skill_applied" || event.type === "skill_failed") {
-    appendSkillStatus(event);
+    // Hidden from chat feed per user request (skills are maintained in the Skills tab)
   } else if (event.type === "approval_required") {
     setLoading(true, `Waiting for approval: ${event.name}`);
     showApproval(event, false);
@@ -3676,6 +3665,13 @@ function connectTerminalWebSocket() {
         }));
       } catch (_) {}
     }
+
+    // Trigger prompt rendering immediately
+    setTimeout(() => {
+      if (terminalState.socket === ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "input", data: "\r\n" }));
+      }
+    }, 120);
   };
 
   ws.onmessage = (event) => {
@@ -3712,19 +3708,22 @@ function connectTerminalWebSocket() {
   };
 }
 
-function toggleTerminal(force) {
+function toggleTerminal(forceOpen = null) {
   const panel = $("terminalPanel");
   const splitter = $("terminalSplitter");
-  const toggleBtn = $("toggleTerminalBtn");
-  if (!panel || !splitter) return;
+  if (!panel) return;
 
-  const shouldOpen = force !== undefined ? force : panel.classList.contains("collapsed");
+  const isCurrentlyOpen = !panel.classList.contains("collapsed");
+  const shouldOpen = forceOpen !== null ? forceOpen : !isCurrentlyOpen;
+
+  panel.classList.toggle("collapsed", !shouldOpen);
+  if (splitter) splitter.classList.toggle("collapsed", !shouldOpen);
   terminalState.isOpen = shouldOpen;
 
   if (shouldOpen) {
-    panel.classList.remove("collapsed");
-    splitter.classList.remove("collapsed");
-    if (toggleBtn) toggleBtn.classList.add("active");
+    if (!terminalState.xterm) {
+      initXtermTerminal();
+    }
     connectTerminalWebSocket();
     if (terminalState.fitAddon) {
       setTimeout(() => {
@@ -3735,9 +3734,6 @@ function toggleTerminal(force) {
       }, 50);
     }
   } else {
-    panel.classList.add("collapsed");
-    splitter.classList.add("collapsed");
-    if (toggleBtn) toggleBtn.classList.remove("active");
     disconnectTerminalWebSocket();
   }
 }
@@ -3768,6 +3764,7 @@ function initIntegratedTerminal() {
       } else {
         connectTerminalWebSocket();
       }
+      terminalState.xterm?.focus();
     });
   }
 
@@ -3787,6 +3784,7 @@ function initIntegratedTerminal() {
       if (terminalState.socket && terminalState.socket.readyState === WebSocket.OPEN) {
         terminalState.socket.send(JSON.stringify({ type: "kill" }));
         terminalState.socket.send(JSON.stringify({ type: "input", data: "\x03" }));
+        terminalState.xterm?.focus();
       }
     });
   }
@@ -3796,7 +3794,9 @@ function initIntegratedTerminal() {
     maxBtn.addEventListener("click", () => {
       terminalState.isMaximized = !terminalState.isMaximized;
       panel.classList.toggle("maximized", terminalState.isMaximized);
-      if (!terminalState.isMaximized) {
+      if (terminalState.isMaximized) {
+        panel.style.height = "";
+      } else {
         const savedHeight = getComputedStyle(panel).getPropertyValue("--terminal-height").trim() || "220px";
         panel.style.height = savedHeight;
       }
@@ -3824,7 +3824,9 @@ function initIntegratedTerminal() {
     e.preventDefault();
     terminalState.isMaximized = !terminalState.isMaximized;
     panel.classList.toggle("maximized", terminalState.isMaximized);
-    if (!terminalState.isMaximized) {
+    if (terminalState.isMaximized) {
+      panel.style.height = "";
+    } else {
       const savedHeight = getComputedStyle(panel).getPropertyValue("--terminal-height").trim() || "220px";
       panel.style.height = savedHeight;
     }

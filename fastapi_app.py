@@ -735,8 +735,10 @@ def create_app() -> FastAPI:
 
         # Replay buffered output history if any, clearing xterm screen first
         history = session.get_output_history()
-        if history:
+        if history and history.strip():
             await safe_send("\x1b[2J\x1b[H" + history)
+        else:
+            session.write("\r\n")
 
         loop = asyncio.get_running_loop()
 
