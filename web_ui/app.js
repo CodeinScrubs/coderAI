@@ -423,11 +423,11 @@ async function runCommand(id) {
   showWorkbench();
   if (id === "files") { setActiveActivity("Files"); activateTab("files"); return $("fileSearch").focus(); }
   if (id === "index") { setActiveActivity("Files"); activateTab("files"); return activateFileView("index"); }
-  if (id === "agent") { activateTab("files"); setActiveActivity("Agent"); return $("promptInput").focus(); }
+  if (id === "agent") { activateTab("files"); return $("promptInput").focus(); }
   if (id === "skills") return activateTab("skills");
   if (id === "prompts") return activateTab("prompts");
   if (id === "memory") return activateTab("memory");
-  if (id === "git") { activateTab("files"); return showEditorView("git"); }
+  if (id === "git") { activateTab("files"); setActiveActivity("Git"); return showEditorView("git"); }
   if (id === "settings" || id === "advanced") {
     setActiveActivity("Settings");
     activateTab("settings");
@@ -1166,8 +1166,12 @@ function showEditorView(name) {
   const isGit = name === "git";
   $("codeEditorWrap").classList.toggle("active", !isGit);
   $("gitHistoryView").classList.toggle("active", isGit);
-  $("showCodeTab").classList.toggle("active", !isGit);
-  $("showGitTab").classList.toggle("active", isGit);
+  if ($("showCodeTab")) $("showCodeTab").classList.toggle("active", !isGit);
+  if ($("showGitTab")) $("showGitTab").classList.toggle("active", isGit);
+  setActiveActivity(isGit ? "Git" : "Files");
+  if (isGit && (!state.data?.git?.history || state.data.git.history.length === 0)) {
+    refresh();
+  }
 }
 
 function renderDiffPreview(diff) {
@@ -2285,12 +2289,14 @@ document.querySelectorAll(".activity-btn").forEach((btn) => {
     } else if (label === "Files") {
       showWorkbench();
       activateTab("files");
+      showEditorView("code");
       $("fileSearch").focus();
     } else if (label === "Graph") {
       showCodeGraphView();
-    } else if (label === "Agent") {
+    } else if (label === "Git") {
       showWorkbench();
-      $("promptInput").focus();
+      activateTab("files");
+      showEditorView("git");
     } else if (label === "Settings") {
       showWorkbench();
       activateTab("settings");
@@ -2467,8 +2473,8 @@ $("attachFile").addEventListener("click", () => {
   $("promptInput").focus();
 });
 $("downloadCode").addEventListener("click", downloadCurrentCode);
-$("showCodeTab").addEventListener("click", () => showEditorView("code"));
-$("showGitTab").addEventListener("click", () => showEditorView("git"));
+$("showCodeTab")?.addEventListener("click", () => showEditorView("code"));
+$("showGitTab")?.addEventListener("click", () => showEditorView("git"));
 $("gitAuthMode").addEventListener("change", updateGitAuthPanel);
 $("cloneGitRepo").addEventListener("click", cloneGitRepository);
 $("pushGitChanges").addEventListener("click", () => previewGitPush().catch((error) => alert(error.message)));
@@ -3520,6 +3526,9 @@ const terminalState = {
   shellType: "powershell",
   isOpen: false,
   isMaximized: false,
+  hasRenderedOutput: false,
+  lastCols: 0,
+  lastRows: 0,
   xterm: null,
   fitAddon: null,
   webLinksAddon: null,
@@ -3605,11 +3614,16 @@ function initXtermTerminal() {
   const triggerFit = () => {
     if (fitDebounceTimer) clearTimeout(fitDebounceTimer);
     fitDebounceTimer = setTimeout(() => {
-      if (terminalState.isOpen && terminalState.fitAddon && terminalState.xterm && container.clientHeight > 0) {
+      if (terminalState.isOpen && terminalState.fitAddon && terminalState.xterm && container.clientHeight > 0 && container.clientWidth > 0) {
         try {
           terminalState.fitAddon.fit();
           const cols = (terminalState.xterm.cols && terminalState.xterm.cols > 0) ? terminalState.xterm.cols : 80;
           const rows = (terminalState.xterm.rows && terminalState.xterm.rows > 0) ? terminalState.xterm.rows : 24;
+          if (cols === terminalState.lastCols && rows === terminalState.lastRows) {
+            return;
+          }
+          terminalState.lastCols = cols;
+          terminalState.lastRows = rows;
           if (terminalState.socket && terminalState.socket.readyState === WebSocket.OPEN) {
             terminalState.socket.send(JSON.stringify({
               type: "resize",
@@ -3619,7 +3633,7 @@ function initXtermTerminal() {
           }
         } catch (_) {}
       }
-    }, 80);
+    }, 120);
   };
 
   if (!terminalState.hasResizeListener) {
@@ -3673,7 +3687,8 @@ function connectTerminalWebSocket() {
   }
 
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const wsUrl = `${protocol}//${window.location.host}/api/terminal/ws?session_id=${terminalState.sessionId}&shell=${encodeURIComponent(terminalState.shellType)}`;
+  const replayParam = terminalState.hasRenderedOutput ? "&replay=0" : "&replay=1";
+  const wsUrl = `${protocol}//${window.location.host}/api/terminal/ws?session_id=${terminalState.sessionId}&shell=${encodeURIComponent(terminalState.shellType)}${replayParam}`;
 
   const ws = new WebSocket(wsUrl);
   terminalState.socket = ws;
@@ -3681,7 +3696,7 @@ function connectTerminalWebSocket() {
   ws.onopen = () => {
     if (terminalState.socket !== ws) return;
 
-    // Start keepalive heartbeat every 20s to prevent idle disconnect
+    // Start keepalive heartbeat every 10s to prevent idle disconnect
     if (terminalState.heartbeatTimer) clearInterval(terminalState.heartbeatTimer);
     terminalState.heartbeatTimer = setInterval(() => {
       if (terminalState.socket === ws && ws.readyState === WebSocket.OPEN) {
@@ -3689,13 +3704,15 @@ function connectTerminalWebSocket() {
           ws.send(JSON.stringify({ type: "ping" }));
         } catch (_) {}
       }
-    }, 20000);
+    }, 10000);
 
     if (terminalState.fitAddon && terminalState.xterm && terminalState.isOpen) {
       try {
         terminalState.fitAddon.fit();
         const cols = (terminalState.xterm.cols && terminalState.xterm.cols > 0) ? terminalState.xterm.cols : 80;
         const rows = (terminalState.xterm.rows && terminalState.xterm.rows > 0) ? terminalState.xterm.rows : 24;
+        terminalState.lastCols = cols;
+        terminalState.lastRows = rows;
         ws.send(JSON.stringify({
           type: "resize",
           cols: cols,
@@ -3713,6 +3730,7 @@ function connectTerminalWebSocket() {
       return;
     }
     if (terminalState.xterm) {
+      terminalState.hasRenderedOutput = true;
       terminalState.xterm.write(event.data);
     }
   };
@@ -3735,7 +3753,7 @@ function connectTerminalWebSocket() {
         if (terminalState.isOpen && (!terminalState.socket || terminalState.socket.readyState === WebSocket.CLOSED)) {
           connectTerminalWebSocket();
         }
-      }, 5000);
+      }, 3000);
     }
   };
 }
@@ -3765,8 +3783,6 @@ function toggleTerminal(forceOpen = null) {
         } catch (_) {}
       }, 50);
     }
-  } else {
-    disconnectTerminalWebSocket();
   }
 }
 
@@ -3791,6 +3807,8 @@ function initIntegratedTerminal() {
   if (shellSelect) {
     shellSelect.addEventListener("change", (e) => {
       terminalState.shellType = e.target.value;
+      terminalState.hasRenderedOutput = false;
+      terminalState.xterm?.reset();
       if (terminalState.socket && terminalState.socket.readyState === WebSocket.OPEN) {
         terminalState.socket.send(JSON.stringify({ type: "restart", shell: terminalState.shellType }));
       } else {
@@ -3803,6 +3821,7 @@ function initIntegratedTerminal() {
   // Clear button (Ctrl+L)
   if (clearBtn) {
     clearBtn.addEventListener("click", () => {
+      terminalState.hasRenderedOutput = false;
       if (terminalState.xterm) {
         terminalState.xterm.clear();
         terminalState.xterm.focus();

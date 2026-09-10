@@ -776,10 +776,12 @@ def create_app() -> FastAPI:
                 except Exception:
                     pass
 
-        # Replay buffered output history only if this is a fresh connection to an existing session
-        history = session.get_output_history()
-        if history and history.strip():
-            await safe_send(history)
+        # Replay buffered output history only if requested (avoids duplicate prompts on reconnect)
+        replay = websocket.query_params.get("replay", "1")
+        if replay in {"1", "true", "yes"}:
+            history = session.get_output_history()
+            if history and history.strip():
+                await safe_send(history)
 
         async def send_terminal_output():
             try:
@@ -903,7 +905,7 @@ def main():
     host = os.getenv("WEB_APP_HOST", "127.0.0.1")
     port = int(os.getenv("WEB_APP_PORT", "7864"))
     print(f"Starting CoderAI FastAPI server on http://{host}:{port}")
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    uvicorn.run(app, host=host, port=port, log_level="info", ws_ping_interval=None)
 
 
 if __name__ == "__main__":
