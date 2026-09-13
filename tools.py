@@ -243,7 +243,71 @@ def tavily_configured() -> bool:
 # ══════════════════════════════════════════════════════════════════════════════
 
 TOOL_SCHEMAS: list[dict] = [
+
     {
+        "type": "function",
+        "function": {
+            "name": "git_status",
+            "description": "Get current Git repository status including branch name and changed files.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_log",
+            "description": "Get recent Git commit history.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "Number of commits to return", "default": 10}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_diff",
+            "description": "Get Git differences for uncommitted or staged changes.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "staged": {"type": "boolean", "description": "If true, diff staged changes, else diff working tree", "default": False}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_commit",
+            "description": "Stage and commit changes to the Git repository.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string", "description": "Commit message"},
+                    "files": {"type": "array", "items": {"type": "string"}, "description": "List of files to commit. Leave empty to commit all changed files."}
+                },
+                "required": ["message"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_checkout",
+            "description": "Switch to an existing Git branch or create a new one.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "branch": {"type": "string", "description": "Branch name to checkout or create"},
+                    "create": {"type": "boolean", "description": "Create the branch if it does not exist", "default": False}
+                },
+                "required": ["branch"]
+            }
+        }
+    },    {
         "type": "function",
         "function": {
             "name": "read_file",
@@ -1467,8 +1531,73 @@ _HANDLERS: dict = {
     "get_impact_radius": lambda a: tool_get_impact_radius(a.get("files", []), a.get("max_depth", 2)),
     "query_code_graph": lambda a: tool_query_code_graph(a["pattern"], a["symbol"]),
     "get_code_review_context": lambda a: tool_get_code_review_context(a.get("task", ""), a.get("files")),
+    "git_status": lambda a: tool_git_status(),
+    "git_log": lambda a: tool_git_log(a.get("limit", 10)),
+    "git_diff": lambda a: tool_git_diff(a.get("staged", False)),
+    "git_commit": lambda a: tool_git_commit(a.get("message"), a.get("files")),
+    "git_checkout": lambda a: tool_git_checkout(a.get("branch"), a.get("create", False)),
 }
 
+
+
+def tool_git_status() -> str:
+    from git_manager import GitManager
+    try:
+        mgr = GitManager(get_workspace())
+        if not mgr.is_repo(): return "Not a git repository."
+        import json
+        return json.dumps(mgr.get_status(), indent=2)
+    except Exception as e:
+        return f"Error: {e}"
+
+def tool_git_log(limit: int = 10) -> str:
+    from git_manager import GitManager
+    try:
+        mgr = GitManager(get_workspace())
+        if not mgr.is_repo(): return "Not a git repository."
+        import json
+        return json.dumps(mgr.get_log(limit=limit), indent=2)
+    except Exception as e:
+        return f"Error: {e}"
+
+def tool_git_diff(staged: bool = False) -> str:
+    from git_manager import GitManager
+    try:
+        mgr = GitManager(get_workspace())
+        if not mgr.is_repo(): return "Not a git repository."
+        diff = mgr.get_diff(staged=staged)
+        return diff if diff.strip() else "No differences found."
+    except Exception as e:
+        return f"Error: {e}"
+
+def tool_git_commit(message: str, files: list = None) -> str:
+    from git_manager import GitManager
+    try:
+        mgr = GitManager(get_workspace())
+        if not mgr.is_repo(): return "Not a git repository."
+        status = mgr.get_status()
+        if not files:
+            files = [f["path"] for f in status.get("files", [])]
+        if not files:
+            return "No files specified or found to commit."
+        commit_hash = mgr.stage_and_commit(files, message)
+        if commit_hash:
+            _emit_tool_event({"type": "git_commit_created", "commit": commit_hash, "message": message, "files": files})
+            return f"Committed successfully. Hash: {commit_hash}"
+        return "Nothing to commit."
+    except Exception as e:
+        return f"Error: {e}"
+
+def tool_git_checkout(branch: str, create: bool = False) -> str:
+    from git_manager import GitManager
+    try:
+        mgr = GitManager(get_workspace())
+        if not mgr.is_repo(): return "Not a git repository."
+        res = mgr.switch_branch(name=branch, create=create)
+        import json
+        return json.dumps(res, indent=2)
+    except Exception as e:
+        return f"Error: {e}"
 
 def execute_tool(name: str, arguments: dict | str) -> str | dict:
     if isinstance(arguments, str):
