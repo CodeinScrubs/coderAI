@@ -1,3 +1,12 @@
+
+    "get_database_schema": lambda a: advanced_tools.tool_get_database_schema(a.get("connection_string", "")),
+    "execute_sql_query": lambda a: advanced_tools.tool_execute_sql_query(a.get("connection_string", ""), a.get("query", "")),
+    "navigate_web": lambda a: advanced_tools.tool_navigate_web(a.get("url", "")),
+    "take_screenshot": lambda a: advanced_tools.tool_take_screenshot(a.get("url", ""), a.get("output_path", "")),
+    "run_docker_container": lambda a: advanced_tools.tool_run_docker_container(a.get("image", ""), a.get("command", "")),
+    "get_container_logs": lambda a: advanced_tools.tool_get_container_logs(a.get("container_name_or_id", "")),
+    "run_linter": lambda a: advanced_tools.tool_run_linter(a.get("command", "flake8 .")),
+    "run_tests": lambda a: advanced_tools.tool_run_tests(a.get("command", "pytest")),
 """
 tools.py - tool definitions and execution helpers.
 
@@ -7,7 +16,7 @@ get_workspace() before reading or writing files.
 
 import os
 import sys
-import subprocess
+import subprocess\nimport advanced_tools\n
 import json
 import uuid
 import re
@@ -865,7 +874,120 @@ def tool_read_file(
                 return f"Requested start_line {s} exceeds total lines ({total_lines}) in {path}."
             selected = lines[s - 1:e]
             numbered = [f"{i}: {line}" for i, line in enumerate(selected, s)]
-            result = f"--- {path} (lines {s}-{e} of {total_lines}) ---\n" + "\n".join(numbered)
+            result = f"--- {path} (lines {s}-{e} of {total_lines}) ---\
+    {
+        "type": "function",
+        "function": {
+            "name": "get_database_schema",
+            "description": "Read the schema structure of a SQL database.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "connection_string": {"type": "string", "description": "SQLAlchemy connection string (e.g., sqlite:///db.sqlite3)"}
+                },
+                "required": ["connection_string"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "execute_sql_query",
+            "description": "Execute a SQL query against a database.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "connection_string": {"type": "string", "description": "SQLAlchemy connection string"},
+                    "query": {"type": "string", "description": "SQL query to execute"}
+                },
+                "required": ["connection_string", "query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "navigate_web",
+            "description": "Navigate to a URL using a headless browser (Playwright) and return the page content.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "URL to navigate to"}
+                },
+                "required": ["url"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "take_screenshot",
+            "description": "Take a full-page screenshot of a website using Playwright.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "Website URL"},
+                    "output_path": {"type": "string", "description": "Path to save the screenshot image (e.g., screenshot.png)"}
+                },
+                "required": ["url", "output_path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_docker_container",
+            "description": "Run a Docker container and return its output.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "image": {"type": "string", "description": "Docker image name"},
+                    "command": {"type": "string", "description": "Command to run inside the container"}
+                },
+                "required": ["image"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_container_logs",
+            "description": "Fetch the logs of a Docker container.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "container_name_or_id": {"type": "string", "description": "Docker container ID or Name"}
+                },
+                "required": ["container_name_or_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_linter",
+            "description": "Run a linter command to check code quality.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Linter command to execute (e.g., flake8 ., pylint my_module)", "default": "flake8 ."}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_tests",
+            "description": "Run the test suite and return the results for self-correction.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Test command (e.g., pytest, npm test)", "default": "pytest"}
+                }
+            }
+        }
+    },n" + "\n".join(numbered)
             if len(result) > MAX_OUTPUT_CHARS:
                 result = result[:MAX_OUTPUT_CHARS] + f"\n\n... [truncated - {len(result)} characters]"
             return result
