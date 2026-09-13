@@ -16,7 +16,12 @@ get_workspace() before reading or writing files.
 
 import os
 import sys
-import subprocess\nimport advanced_tools\n
+import subprocess\
+    "run_kubectl": lambda a: advanced_tools.tool_run_kubectl(a.get("command", "")),
+    "run_terraform": lambda a: advanced_tools.tool_run_terraform(a.get("command", "")),
+    "test_api_endpoint": lambda a: advanced_tools.tool_test_api_endpoint(a.get("url", ""), a.get("method", "GET"), a.get("headers"), a.get("json_body")),
+    "run_npm_script": lambda a: advanced_tools.tool_run_npm_script(a.get("script_name", ""), a.get("package_manager", "npm")),
+nimport advanced_tools\n
 import json
 import uuid
 import re
@@ -987,7 +992,67 @@ def tool_read_file(
                 }
             }
         }
-    },n" + "\n".join(numbered)
+    },n" + "\
+    {
+        "type": "function",
+        "function": {
+            "name": "run_kubectl",
+            "description": "Run a Kubernetes (kubectl) command.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Command and arguments (e.g. 'get pods -n kube-system')"}
+                },
+                "required": ["command"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_terraform",
+            "description": "Run an IaC Terraform command.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Command and arguments (e.g. 'plan', 'apply -auto-approve')"}
+                },
+                "required": ["command"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "test_api_endpoint",
+            "description": "Test a REST/GraphQL API endpoint by sending an HTTP request.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "The API endpoint URL"},
+                    "method": {"type": "string", "description": "HTTP Method (GET, POST, PUT, DELETE)", "default": "GET"},
+                    "headers": {"type": "object", "description": "Dictionary of HTTP headers"},
+                    "json_body": {"type": "object", "description": "JSON payload to send in body"}
+                },
+                "required": ["url"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_npm_script",
+            "description": "Run an npm or yarn script in a Node.js project.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "script_name": {"type": "string", "description": "Script name (e.g. 'build', 'dev', 'test')"},
+                    "package_manager": {"type": "string", "description": "Package manager to use ('npm', 'yarn', 'pnpm')", "default": "npm"}
+                },
+                "required": ["script_name"]
+            }
+        }
+    },n".join(numbered)
             if len(result) > MAX_OUTPUT_CHARS:
                 result = result[:MAX_OUTPUT_CHARS] + f"\n\n... [truncated - {len(result)} characters]"
             return result

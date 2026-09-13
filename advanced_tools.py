@@ -103,3 +103,60 @@ def tool_run_tests(command: str = "pytest") -> str:
         return f"Test exit code: {res.returncode}\nOutput:\n{res.stdout}\n{res.stderr}"
     except Exception as e:
         return f"Test execution error: {e}"
+\n
+# --- Infrastructure & DX Tools ---
+def tool_run_kubectl(command: str) -> str:
+    try:
+        import subprocess
+        cmd = f"kubectl {command}"
+        res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60)
+        return f"Exit code: {res.returncode}\nStdout:\n{res.stdout}\nStderr:\n{res.stderr}"
+    except Exception as e:
+        return f"Kubectl error: {e}"
+
+def tool_run_terraform(command: str) -> str:
+    try:
+        import subprocess
+        cmd = f"terraform {command}"
+        res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
+        return f"Exit code: {res.returncode}\nStdout:\n{res.stdout}\nStderr:\n{res.stderr}"
+    except Exception as e:
+        return f"Terraform error: {e}"
+
+def tool_test_api_endpoint(url: str, method: str = "GET", headers: dict = None, json_body: dict = None) -> str:
+    try:
+        import urllib.request
+        import json
+        req_headers = headers or {}
+        req_headers.setdefault("User-Agent", "CoderAI-Agent/1.0")
+        
+        data = None
+        if json_body:
+            data = json.dumps(json_body).encode("utf-8")
+            req_headers.setdefault("Content-Type", "application/json")
+            
+        req = urllib.request.Request(url, data=data, headers=req_headers, method=method.upper())
+        with urllib.request.urlopen(req, timeout=30) as response:
+            status = response.status
+            resp_headers = dict(response.headers)
+            body = response.read().decode("utf-8")
+            
+        return json.dumps({
+            "status": status,
+            "headers": resp_headers,
+            "body_snippet": body[:2000]
+        }, indent=2)
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        return f"HTTP Error {e.code}: {e.reason}\nBody: {body[:2000]}"
+    except Exception as e:
+        return f"API Test error: {e}"
+
+def tool_run_npm_script(script_name: str, package_manager: str = "npm") -> str:
+    try:
+        import subprocess
+        cmd = f"{package_manager} run {script_name}"
+        res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
+        return f"Exit code: {res.returncode}\nStdout:\n{res.stdout}\nStderr:\n{res.stderr}"
+    except Exception as e:
+        return f"NPM execution error: {e}"
