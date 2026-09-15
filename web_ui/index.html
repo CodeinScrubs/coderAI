@@ -420,11 +420,11 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
               Save
             </button>
-            <button id="copyEditorCode" type="button" class="ghost" title="Copy editor content to clipboard">
+            <button id="copyEditorCode" type="button" class="ghost" style="display:none;" title="Copy editor content to clipboard">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
               Copy
             </button>
-            <button id="pasteEditorCode" type="button" class="ghost" title="Paste from clipboard">
+            <button id="pasteEditorCode" type="button" class="ghost" style="display:none;" title="Paste from clipboard">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>
               Paste
             </button>
@@ -557,15 +557,19 @@
             <span id="memoryUsageIndicator" class="memory-indicator"></span>
           </div>
           <div class="agent-head-right">
-            <div id="tokenMeter" class="token-meter" title="Context window usage">
-              <div class="token-meter-row">
-                <span>Context</span>
-                <strong id="tokenPercent">0%</strong>
+            <div id="tokenMeter" class="token-meter" title="Context window usage" style="display:flex;gap:12px;font-size:11px;color:var(--muted);align-items:center;">
+              <div style="display:flex;flex-direction:column;align-items:flex-end;">
+                <span>Input</span>
+                <strong id="inputTokensVal" style="color:var(--accent);">0</strong>
               </div>
-              <div class="token-bar">
-                <span id="tokenBarFill"></span>
+              <div style="display:flex;flex-direction:column;align-items:flex-end;">
+                <span>Thinking</span>
+                <strong id="thinkingTokensVal" style="color:var(--warning);">0</strong>
               </div>
-              <span id="tokenDetails">0 / 0 tokens</span>
+              <div style="display:flex;flex-direction:column;align-items:flex-end;">
+                <span>Output</span>
+                <strong id="outputTokensVal" style="color:var(--green);">0</strong>
+              </div>
             </div>
           </div>
         </section>
@@ -913,6 +917,10 @@
   <script src="/vendor/xterm/xterm.js"></script>
   <script src="/vendor/xterm/xterm-addon-fit.js"></script>
   <script src="/vendor/xterm/xterm-addon-web-links.js"></script>
-  <script src="/app.js?v=20260912-git-jump-fix-final"></script>
+  <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
+<script>
+  require.config({ paths: { 'vs': 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs' }});
+</script>
+<script src="/app.js?v=20260912-git-jump-fix-final"></script>
 </body>
 </html>

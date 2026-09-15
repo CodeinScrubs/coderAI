@@ -225,7 +225,7 @@ function highlightCode(code, info = "text") {
   return html;
 }
 
-function updateEditorLineNumbers() {
+function updateEditorLineNumbers() { return; 
   const editor = $("codeEditor");
   const gutter = $("editorGutter");
   if (!editor || !gutter) return;
@@ -264,7 +264,7 @@ function setCodePreview(title, meta, content, info = "txt") {
   setCodeEditorContent(title, meta, content, info);
 }
 
-function syncEditorHighlightScroll() {
+function syncEditorHighlightScroll() { return; 
   const gutter = $("editorGutter");
   const editor = $("codeEditor");
   if (!gutter || !editor) return;
@@ -1412,37 +1412,32 @@ function updateTokenUsage() {
 
 function renderTokenUsage(usage) {
   const activeContextTokens = state.activeFile && state.fileContent ? estimateTextTokens(state.fileContent) : 0;
-  const draftPromptTokens = $("promptInput") ? estimateTextTokens($("promptInput").value) : 0;
+  const draftPromptTokens = promptInput ? estimateTextTokens(promptInput.value) : 0;
   const extraTokens = activeContextTokens + draftPromptTokens;
-  const inputTokens = Number(usage.input_tokens || 0) + extraTokens;
-  const settingsBudget = Number(state.data?.settings?.context_token_budget || 0);
-  const effectiveWindow = Number(usage.effective_window || usage.context_window || settingsBudget || 0);
-  const contextWindow = Number(usage.context_window || effectiveWindow);
-  const configuredBudget = Number(usage.configured_budget || settingsBudget || effectiveWindow);
-  const percent = effectiveWindow ? Math.min(999, Math.round((inputTokens / effectiveWindow) * 100)) : 0;
-  const fillPercent = Math.max(0, Math.min(100, percent));
-  const meter = $("tokenMeter");
-  meter.classList.toggle("warn", percent >= 70 && percent < 90);
-  meter.classList.toggle("danger", percent >= 90);
-  $("tokenPercent").textContent = `${percent}%`;
-  $("tokenBarFill").style.width = `${fillPercent}%`;
-  $("tokenDetails").textContent = `${formatTokens(inputTokens)} / ${formatTokens(effectiveWindow)} tokens`;
-
-  const source = usage.window_source || "estimated";
-  const counter = usage.counter || "estimated";
-  const remaining = Math.max(0, effectiveWindow - inputTokens);
-  meter.title = [
-    `Input tokens: ${inputTokens.toLocaleString()}`,
-    `Base context tokens: ${Number(usage.input_tokens || 0).toLocaleString()}`,
-    `Active editor estimate: ${activeContextTokens.toLocaleString()}`,
-    `Draft prompt estimate: ${draftPromptTokens.toLocaleString()}`,
-    `Effective context budget: ${effectiveWindow.toLocaleString()}`,
-    `Model context window: ${contextWindow.toLocaleString()} (${source})`,
-    `Configured context budget: ${configuredBudget.toLocaleString()}`,
-    `Reserved response tokens: ${Number(usage.response_budget || 0).toLocaleString()}`,
-    `Remaining input tokens: ${remaining.toLocaleString()}`,
-    `Counter: ${counter}`,
-  ].join("\n");
+  const inputTokens = Number(usage?.input_tokens || 0) + extraTokens;
+  
+  let outputTokens = 0;
+  let thinkingTokens = 0;
+  const messages = state.data?.messages || [];
+  for (const msg of messages) {
+      if (msg.role === "assistant") {
+          outputTokens += estimateTextTokens(msg.content || "");
+          thinkingTokens += estimateTextTokens(msg.thinking || "");
+      }
+  }
+  
+  // Try to find currently streaming elements if they exist
+  const streamContent = messages?.querySelector(".message.assistant:last-child .message-text")?.innerText || "";
+  const streamThinking = messages?.querySelector(".message.assistant:last-child .thinking-content")?.innerText || "";
+  if (state.isGenerating) {
+      // Very rough approximation of streamed tokens so far
+      outputTokens += estimateTextTokens(streamContent);
+      thinkingTokens += estimateTextTokens(streamThinking);
+  }
+  
+  if (inputTokensVal) inputTokensVal.textContent = formatTokens(inputTokens);
+  if (outputTokensVal) outputTokensVal.textContent = formatTokens(outputTokens);
+  if (thinkingTokensVal) thinkingTokensVal.textContent = formatTokens(thinkingTokens);
 }
 
 function renderModels(modelPayload, activeModel) {
@@ -4030,3 +4025,52 @@ refresh().catch((err) => {
     }
   }
 });
+
+
+// --- Monaco Editor Setup ---
+let monacoEditor = null;
+if (window.require) {
+    require(['vs/editor/editor.main'], function () {
+        monacoEditor = monaco.editor.create(document.getElementById('monacoContainer'), {
+            value: state.fileContent || "",
+            language: 'plaintext',
+            theme: 'vs-dark',
+            automaticLayout: true,
+            minimap: { enabled: false },
+            scrollBeyondLastLine: false,
+            wordWrap: 'on'
+        });
+        
+        let isUpdatingFromMonaco = false;
+        monacoEditor.onDidChangeModelContent(() => {
+            isUpdatingFromMonaco = true;
+            const val = monacoEditor.getValue();
+            if (codeEditor) {
+                codeEditor.value = val;
+                codeEditor.dispatchEvent(new Event("input"));
+            }
+            isUpdatingFromMonaco = false;
+        });
+
+        // Override setCodeEditorContent
+        const originalSetCode = setCodeEditorContent;
+        window.setCodeEditorContent = function(title, meta, content, info) {
+            originalSetCode(title, meta, content, info);
+            if (monacoEditor && !isUpdatingFromMonaco) {
+                monacoEditor.setValue(content || "");
+                let ext = (title || "").split('.').pop().toLowerCase();
+                let lang = "plaintext";
+                const langMap = {
+                    "js": "javascript", "ts": "typescript", "py": "python", 
+                    "html": "html", "css": "css", "json": "json", 
+                    "md": "markdown", "sh": "shell", "bash": "shell",
+                    "sql": "sql", "yaml": "yaml", "yml": "yaml",
+                    "xml": "xml", "go": "go", "java": "java",
+                    "cpp": "cpp", "c": "c", "cs": "csharp"
+                };
+                if (langMap[ext]) lang = langMap[ext];
+                monaco.editor.setModelLanguage(monacoEditor.getModel(), lang);
+            }
+        };
+    });
+}
