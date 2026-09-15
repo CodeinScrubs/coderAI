@@ -103,7 +103,7 @@ def tool_run_tests(command: str = "pytest") -> str:
         return f"Test exit code: {res.returncode}\nOutput:\n{res.stdout}\n{res.stderr}"
     except Exception as e:
         return f"Test execution error: {e}"
-\n
+
 # --- Infrastructure & DX Tools ---
 def tool_run_kubectl(command: str) -> str:
     try:
