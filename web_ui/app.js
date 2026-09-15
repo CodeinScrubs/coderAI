@@ -1427,8 +1427,8 @@ function renderTokenUsage(usage) {
   }
   
   // Try to find currently streaming elements if they exist
-  const streamContent = messages?.querySelector(".message.assistant:last-child .message-text")?.innerText || "";
-  const streamThinking = messages?.querySelector(".message.assistant:last-child .thinking-content")?.innerText || "";
+  const streamContent = $("messages")?.querySelector(".message.assistant:last-child .message-text")?.innerText || "";
+  const streamThinking = $("messages")?.querySelector(".message.assistant:last-child .thinking-content")?.innerText || "";
   if (state.isGenerating) {
       // Very rough approximation of streamed tokens so far
       outputTokens += estimateTextTokens(streamContent);
@@ -4033,7 +4033,11 @@ if (window.require) {
     require(['vs/editor/editor.main'], function () {
         monacoEditor = monaco.editor.create(document.getElementById('monacoContainer'), {
             value: state.fileContent || "",
-            language: 'plaintext',
+            language: (() => {
+                let ext = (state.activeFile || "").split('.').pop().toLowerCase();
+                const langMap = { "js": "javascript", "ts": "typescript", "py": "python", "html": "html", "css": "css", "json": "json", "md": "markdown", "sh": "shell", "bash": "shell", "sql": "sql", "yaml": "yaml", "yml": "yaml", "xml": "xml", "go": "go", "java": "java", "cpp": "cpp", "c": "c", "cs": "csharp", "php": "php", "rb": "ruby" };
+                return langMap[ext] || "plaintext";
+            })(),
             theme: 'vs-dark',
             automaticLayout: true,
             minimap: { enabled: false },
