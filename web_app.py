@@ -946,10 +946,33 @@ def _build_workspace_context(active_context: dict | None = None) -> str:
             else:
                 lines += [
                     "The user's next request is about this file unless they explicitly say otherwise.",
-                    "If you need to see the code inside this file to answer their request, use the `read_file` tool.",
-                    "Do NOT guess the file contents. Retrieve it via tool if needed.",
                     "Use `write_file` or `replace_in_file` to apply requested changes to this path when appropriate.",
                 ]
+                
+                body = _clip_for_context(content, 18_000)
+                lines += [
+                    "",
+                    f"```{active_context.get('info') or ''}".rstrip(),
+                    body,
+                    "```",
+                ]
+                
+                try:
+                    from code_graph_service import code_graph_service
+                    if code_graph_service.is_available():
+                        res = code_graph_service.get_minimal_context(changed_files=[path])
+                        if res.get("ok") and res.get("data", {}).get("status") == "ready":
+                            graph_summary = res["data"].get("context_text", "")
+                            if graph_summary:
+                                lines += [
+                                    "",
+                                    "=== File Dependency Graph Context ===",
+                                    "Use the following knowledge graph summary to understand the architecture and dependencies of the file, without needing to `read_file` blindly.",
+                                    graph_summary,
+                                    "=====================================",
+                                ]
+                except Exception as e:
+                    pass
     return "\n".join(lines)
 
 
