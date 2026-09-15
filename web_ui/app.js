@@ -619,7 +619,10 @@ async function openProjectInEditor(startSession = false) {
 
 async function resumeProjectSession(sessionId) {
   renderState(await api("/api/memory/session/resume", { method: "POST", body: JSON.stringify({ session_id: sessionId }) }));
-  showWorkbench(); setActiveActivity("Agent");
+  showWorkbench(); 
+  setActiveActivity("Agent");
+  activateTab("chat");
+  if (promptInput) promptInput.focus();
 }
 
 function renderMemory(memory) {
