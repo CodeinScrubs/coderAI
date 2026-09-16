@@ -1196,6 +1196,7 @@ function renderDiffPreview(diff) {
 
 function showApproval(event, isGitDiff = false) {
   state.pendingApprovalType = isGitDiff ? "git" : "tool";
+  state.pendingApprovalToken = event.token || "";
   $("approvalTitle").textContent = isGitDiff ? "Review File Change" : "Execution Approval Required";
   $("approvalToolName").textContent = event.name || "tool";
   $("approvalWorkspace").textContent = state.data?.workspace?.path || "";
@@ -1240,12 +1241,16 @@ async function resolveApproval(approved) {
   }
   const prefix = state.pendingApprovalType === "git" ? "/api/git" : "/api/approval";
   const endpoint = approved ? "approve" : "reject";
+  const body = approved
+    ? { always_allow_for_session: $("approvalAlways").checked, token: state.pendingApprovalToken || "" }
+    : { reason: "Rejected by user", token: state.pendingApprovalToken || "" };
   await api(`${prefix}/${endpoint}`, {
     method: "POST",
-    body: JSON.stringify(approved ? { always_allow_for_session: $("approvalAlways").checked } : { reason: "Rejected by user" }),
+    body: JSON.stringify(body),
   });
   $("approvalModal").style.display = "none";
   state.pendingApprovalType = null;
+  state.pendingApprovalToken = "";
 }
 
 // --- Approval Policies Management ---

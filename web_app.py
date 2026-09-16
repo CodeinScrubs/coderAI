@@ -40,6 +40,7 @@ from vector_store import EmbeddingModelManager
 from tools import (
     TOOL_SCHEMAS, execute_tool, get_workspace, set_tavily_config, set_workspace,
     tool_scan_project, get_approval_state, approve_pending, reject_pending, clear_approval_state,
+    get_approval_decision,
     set_git_config, set_tool_event_sink, set_sandbox_config,
 )
 from context_builder import (
@@ -79,30 +80,49 @@ def _execute_tool_with_approval(name: str, args: dict, write_event=None) -> str:
     if not approval_info:
         return output
 
+    token = approval_info.get("token", "")
+
     if write_event:
-        event_type = "git_diff_preview" if name in {"write_file", "replace_in_file"} else "approval_required"
+        event_type = "git_diff_preview" if name in {
+            "write_file", "replace_in_file", "append_file", "delete_file"
+        } else "approval_required"
         write_event({
             "type": event_type,
             "name": approval_info.get("tool_name", name),
             "args": approval_info.get("arguments", args),
             "preview": approval_info.get("preview", ""),
+            "token": token,
         })
+
+    def _poll_decision() -> dict | None:
+        # Prefer the token-scoped decision; fall back to the flat snapshot for
+        # (legacy) payloads that carried no token.
+        if token:
+            return get_approval_decision(token)
+        state = get_approval_state()
+        if not state.get("pending") and state.get("approved"):
+            return {"approved": True, "rejected": False,
+                    "rejection_reason": "", "always_allow": state.get("always_allow", False)}
+        if state.get("pending") or state.get("approved"):
+            return None
+        return {"approved": False, "rejected": state.get("rejected", False),
+                "rejection_reason": state.get("rejection_reason", ""),
+                "always_allow": False}
 
     waited = 0.0
     while waited < APPROVAL_TIMEOUT:
         time.sleep(APPROVAL_POLL_INTERVAL)
         waited += APPROVAL_POLL_INTERVAL
-        state = get_approval_state()
-        if state.get("rejected"):
-            reason = state.get("rejection_reason") or "User rejected execution."
-            return f"Execution rejected: {reason}"
-        if state.get("approved") or state.get("always_allow"):
+        decision = _poll_decision()
+        if decision and decision["rejected"]:
+            return f"Execution rejected: {decision['rejection_reason'] or 'User rejected execution.'}"
+        if decision and decision["approved"]:
             set_tool_event_sink(write_event)
             try:
                 return execute_tool(name, args)
             finally:
                 set_tool_event_sink(None)
-        if not state.get("pending") and not state.get("approved"):
+        if decision is None:
             # Cleared/reset elsewhere (e.g. chat cleared) without explicit reject.
             return f"Tool execution cancelled: {name}"
 
@@ -2763,11 +2783,11 @@ class Handler(BaseHTTPRequestHandler):
                 _send_json(self, _client_state())
                 return
             if path == "/api/approval/approve":
-                approve_pending(bool(data.get("always_allow_for_session")))
+                approve_pending(bool(data.get("always_allow_for_session")), data.get("token"))
                 _send_json(self, get_approval_state())
                 return
             if path == "/api/approval/reject":
-                reject_pending(data.get("reason", ""))
+                reject_pending(data.get("reason", ""), data.get("token"))
                 _send_json(self, get_approval_state())
                 return
             if path == "/api/policies":
@@ -2777,11 +2797,11 @@ class Handler(BaseHTTPRequestHandler):
                 _send_json(self, _reset_policy_payload(data))
                 return
             if path == "/api/git/approve":
-                approve_pending(bool(data.get("always_allow_for_session")))
+                approve_pending(bool(data.get("always_allow_for_session")), data.get("token"))
                 _send_json(self, get_approval_state())
                 return
             if path == "/api/git/reject":
-                reject_pending(data.get("reason", ""))
+                reject_pending(data.get("reason", ""), data.get("token"))
                 _send_json(self, get_approval_state())
                 return
             if path == "/api/git/init":
