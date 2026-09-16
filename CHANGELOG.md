@@ -5,6 +5,44 @@ All notable changes to CoderAI are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-09-16
+
+### Changed
+
+- **Per-request approval tokens.** Approval state is now a token-keyed,
+  thread-safe store instead of a single global slot keyed by tool name. Each
+  pending action carries a stable token (a hash of the tool + arguments) that
+  round-trips through the API and browser; approving one action no longer
+  silently authorizes a different one, and "always allow" is scoped to a single
+  tool for the session instead of being one global flag. Git push keeps its
+  separate explicit-confirmation flow.
+
+### Fixed
+
+- **Advanced shell tools are now gated and no longer shell-injectable.**
+  `run_linter`, `run_tests`, `run_kubectl`, `run_terraform`, `run_npm_script`,
+  `run_docker_container`, and `get_container_logs` previously ran
+  model-controlled strings via `shell=True` with no approval. They now require
+  approval, the fixed binaries run as argv lists (no shell), and linter/tests
+  run through the sandboxed runner.
+- **SQL tools are local-only.** `execute_sql_query` and `get_database_schema`
+  only reach a workspace-local SQLite file; remote connection strings and
+  paths outside the workspace are rejected. Read-only statements run
+  unprompted; write statements require approval.
+- **`delete_file` and `append_file` now require approval**, matching
+  `write_file` and `replace_in_file`.
+- **`query_code_graph` is no longer dead.** Its advertised patterns
+  (`calls`, `callers`, `imports`, `dependencies`, `extended_by`) are translated
+  to the code-review-graph engine's real pattern names, and engine errors are
+  surfaced instead of being reported as success.
+- **Offline hindsight fallback actually works.** It previously imported a
+  nonexistent `get_memory_manager` and called nonexistent methods (the error was
+  swallowed), so `remember_fact` reported success for facts that were never
+  stored. Added a real `get_memory_manager(workspace)` factory and
+  `MemoryManager.get_summary()`; the fallback now uses
+  `index_fact` / `retrieve_relevant` / `get_summary`, and `remember_fact`
+  reports genuine failures honestly.
+
 ## [1.3.0] - 2026-09-16
 
 ### Added
