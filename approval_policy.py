@@ -19,6 +19,8 @@ from typing import Any
 DEFAULT_GLOBAL_POLICY: dict[str, str] = {
     "write_file": "always",        # "always" (diff preview) | "auto"
     "replace_in_file": "always",    # "always" (diff preview) | "auto"
+    "delete_file": "always",        # "always" (diff preview) | "auto"
+    "append_file": "always",        # "always" (diff preview) | "auto"
     "run_bash": "dangerous_only",  # "always" | "dangerous_only" | "auto"
     "run_python": "always",        # "always" | "auto"
     "git_push": "always",          # "always" | "auto"
@@ -215,7 +217,7 @@ class ApprovalPolicyManager:
         rule = policy.get(tool_name, "always")
 
         # 1. File modification tools
-        if tool_name in {"write_file", "replace_in_file"}:
+        if tool_name in {"write_file", "replace_in_file", "delete_file", "append_file"}:
             if rule == "auto":
                 return False, "", "diff"
             return True, f"Policy requires review for {tool_name}", "diff"

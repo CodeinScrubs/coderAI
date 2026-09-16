@@ -1565,11 +1565,17 @@ def tool_replace_in_file(path: str, old: str, new: str, regex: bool = False, cou
 def tool_append_file(path: str, content: str) -> str:
     try:
         p = _safe_path(path)
+        arguments = {"path": path, "content": content}
+        manager = GitManager(get_workspace())
+        preview = manager.get_diff_preview(path, content) if manager.is_repo() else f"Append {len(content)} bytes to: {path}"
+        _gate_approval("append_file", arguments, preview, "diff")
         p.parent.mkdir(parents=True, exist_ok=True)
         with p.open("a", encoding="utf-8") as f:
             f.write(content)
         _update_code_index(path)
         return f"Appended to file: {path} ({p.stat().st_size:,} bytes)"
+    except ToolApprovalRequired:
+        raise
     except Exception as e:
         return f"Error: {e}"
 
@@ -1620,9 +1626,15 @@ def tool_delete_file(path: str) -> str:
         p = _safe_path(path)
         if not p.exists():
             return f"File does not exist: {path}"
+        arguments = {"path": path}
+        manager = GitManager(get_workspace())
+        preview = manager.get_diff_preview(path, "") if manager.is_repo() else f"Delete file: {path} ({p.stat().st_size:,} bytes)"
+        _gate_approval("delete_file", arguments, preview, "diff")
         p.unlink()
         _update_code_index(path, deleted=True)
         return f"Deleted: {path}"
+    except ToolApprovalRequired:
+        raise
     except Exception as e:
         return f"Error: {e}"
 
