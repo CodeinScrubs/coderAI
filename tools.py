@@ -12,6 +12,7 @@ import advanced_tools
 import json
 import uuid
 import re
+import hashlib
 import threading
 import urllib.request
 import urllib.error
@@ -138,16 +139,153 @@ def _update_code_index(path: str, deleted: bool = False) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class ToolApprovalRequired(Exception):
-    """Raised when a tool call requires explicit user approval before execution."""
-    def __init__(self, tool_name: str, arguments: dict, preview: str):
+    """Raised when a tool call requires explicit user approval before execution.
+
+    Carries the per-request approval ``token`` (a hash of the tool name and its
+    arguments) so the UI/backend can correlate an approve/reject decision with the
+    exact call that requested it, rather than keying on the tool name alone.
+    """
+
+    def __init__(self, tool_name: str, arguments: dict, preview: str, token: str = "") -> None:
         self.tool_name = tool_name
         self.arguments = arguments
         self.preview = preview
+        self.token = token
         super().__init__(f"Approval required for {tool_name}")
 
 
-_approval_state: dict = {
+def _compute_approval_token(tool_name: str, arguments: dict) -> str:
+    """Return a deterministic approval token for a tool call.
+
+    The token is the SHA-256 of the tool name and its arguments (key-ordered, so it
+    is independent of argument insertion order). Two calls of the same tool with
+    identical arguments share a token; a different argument or a different tool yields
+    a different token.
+    """
+    payload = json.dumps({"tool": tool_name, "args": arguments}, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+class _ApprovalStore:
+    """Token-keyed approval state, safe for concurrent agent loops.
+
+    Replaces the old single-slot, name-keyed global. Each pending request is stored
+    under its own token, a granted decision is single-use (consumed on re-execution,
+    so a token cannot be replayed), and the per-session "always allow" set is keyed by
+    *tool name* so approving one tool never auto-approves another.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._records: dict[str, dict] = {}
+        self._latest_pending_token: str | None = None
+        self._session_allow: set[str] = set()
+
+    @staticmethod
+    def _new_record(token: str, tool_name: str, arguments: dict, preview: str) -> dict:
+        return {
+            "token": token,
+            "tool_name": tool_name,
+            "arguments": arguments,
+            "preview": preview,
+            "pending": True,
+            "approved": False,
+            "rejected": False,
+            "rejection_reason": "",
+            "always_allow": False,
+        }
+
+    def request(self, tool_name: str, arguments: dict, preview: str) -> str:
+        """Register a new pending request; return its token."""
+        token = _compute_approval_token(tool_name, arguments)
+        with self._lock:
+            self._records[token] = self._new_record(token, tool_name, arguments, preview)
+            self._latest_pending_token = token
+        return token
+
+    def get_record(self, token: str) -> dict | None:
+        with self._lock:
+            record = self._records.get(token)
+            return dict(record) if record is not None else None
+
+    def resolve(
+        self,
+        token: str | None,
+        approved: bool,
+        always_allow: bool = False,
+        reason: str = "",
+    ) -> bool:
+        """Record an approve/reject decision for a token.
+
+        Returns True if a matching pending record was decided. A ``None``/empty token
+        falls back to the most recently requested pending request (back-compat for
+        clients that predate tokens). An ``always_allow`` approval opens the session for
+        that token's *tool name only*.
+        """
+        with self._lock:
+            tok = token or self._latest_pending_token
+            record = self._records.get(tok) if tok else None
+            if record is None or not record["pending"]:
+                return False
+            record["pending"] = False
+            record["approved"] = bool(approved)
+            record["rejected"] = not approved
+            record["rejection_reason"] = reason or ""
+            record["always_allow"] = bool(always_allow) and approved
+            if approved and always_allow:
+                self._session_allow.add(record["tool_name"])
+            return True
+
+    def consume(self, token: str) -> None:
+        """Drop a decided record after it has been honored (single-use)."""
+        with self._lock:
+            self._records.pop(token, None)
+
+    def decision(self, token: str) -> dict | None:
+        """Return the decision for a token, or None while it is still pending/unknown."""
+        with self._lock:
+            record = self._records.get(token)
+        if record is None or record["pending"]:
+            return None
+        return {
+            "approved": record["approved"],
+            "rejected": record["rejected"],
+            "rejection_reason": record["rejection_reason"],
+            "always_allow": record["always_allow"],
+        }
+
+    def allow_tool_for_session(self, tool_name: str) -> None:
+        with self._lock:
+            self._session_allow.add(tool_name)
+
+    def is_tool_allowed(self, tool_name: str) -> bool:
+        with self._lock:
+            return tool_name in self._session_allow
+
+    def latest_pending(self) -> dict | None:
+        """Return the most recently requested *pending* record, if any."""
+        with self._lock:
+            token = self._latest_pending_token
+            record = self._records.get(token) if token else None
+            if record is not None and record["pending"]:
+                return dict(record)
+            for tok, rec in reversed(list(self._records.items())):
+                if rec["pending"]:
+                    return dict(rec)
+        return None
+
+    def clear(self) -> None:
+        with self._lock:
+            self._records.clear()
+            self._latest_pending_token = None
+            self._session_allow.clear()
+
+
+_approval_store = _ApprovalStore()
+
+_EMPTY_APPROVAL_STATE: dict = {
     "pending": False,
+    "token": "",
     "tool_name": "",
     "arguments": {},
     "preview": "",
@@ -159,55 +297,102 @@ _approval_state: dict = {
 
 
 def get_approval_state() -> dict:
-    """Return a copy of the current approval state."""
-    return dict(_approval_state)
+    """Return a flat, UI-compatible snapshot of the latest pending approval request.
+
+    This is a superset of the legacy shape (it also carries ``token``) so the
+    ``/api/approval`` endpoint, the poll loop, and the UI keep working unchanged.
+    When no request is pending it returns an empty record with ``pending`` False.
+    """
+    record = _approval_store.latest_pending()
+    if record is None:
+        return dict(_EMPTY_APPROVAL_STATE)
+    return dict(record)
 
 
-def approve_pending(always_allow_for_session: bool = False) -> None:
-    """Mark the pending approval request as approved."""
-    global _approval_state
-    _approval_state["approved"] = True
-    _approval_state["rejected"] = False
-    _approval_state["pending"] = False
-    if always_allow_for_session:
-        _approval_state["always_allow"] = True
+def resolve_approval(
+    token: str,
+    approved: bool,
+    always_allow: bool = False,
+    reason: str = "",
+) -> bool:
+    """Record an approve/reject decision for a specific token.
+
+    Args:
+        token: The approval token returned in the ``approval_required`` payload.
+        approved: True to approve, False to reject.
+        always_allow: If approving, allow this tool for the rest of the session.
+        reason: Optional rejection reason.
+
+    Returns:
+        True if a matching pending request was decided, False otherwise.
+    """
+    return _approval_store.resolve(token, approved, always_allow, reason)
 
 
-def reject_pending(reason: str = "") -> None:
-    """Mark the pending approval request as rejected."""
-    global _approval_state
-    _approval_state["rejected"] = True
-    _approval_state["approved"] = False
-    _approval_state["pending"] = False
-    _approval_state["rejection_reason"] = reason or ""
+def get_approval_decision(token: str) -> dict | None:
+    """Return the decision for a token, or None while it is still pending.
+
+    The decision dict has keys ``approved``, ``rejected``, ``rejection_reason`` and
+    ``always_allow``. A ``None`` return means the poll loop should keep waiting.
+    """
+    return _approval_store.decision(token)
+
+
+def allow_tool_for_session(tool_name: str) -> None:
+    """Allow a tool to run without prompting for the rest of the session."""
+    _approval_store.allow_tool_for_session(tool_name)
+
+
+def approve_pending(always_allow_for_session: bool = False, token: str | None = None) -> None:
+    """Mark a pending approval request as approved.
+
+    Defaults to the most recently requested request when no token is supplied, so
+    legacy callers (and tests) keep working.
+    """
+    _approval_store.resolve(token, True, always_allow_for_session, "")
+
+
+def reject_pending(reason: str = "", token: str | None = None) -> None:
+    """Mark a pending approval request as rejected (back-compat wrapper)."""
+    _approval_store.resolve(token, False, False, reason or "")
 
 
 def clear_approval_state() -> None:
-    """Reset approval state (call on chat reset)."""
-    global _approval_state
-    _approval_state = {
-        "pending": False,
-        "tool_name": "",
-        "arguments": {},
-        "preview": "",
-        "approved": False,
-        "rejected": False,
-        "rejection_reason": "",
-        "always_allow": False,
-    }
+    """Reset all approval state and the per-session allow set (call on chat reset)."""
+    _approval_store.clear()
 
 
 def _request_approval(tool_name: str, arguments: dict, preview: str) -> None:
-    """Set pending approval state and raise ToolApprovalRequired."""
-    global _approval_state
-    _approval_state["pending"] = True
-    _approval_state["tool_name"] = tool_name
-    _approval_state["arguments"] = arguments
-    _approval_state["preview"] = preview
-    _approval_state["approved"] = False
-    _approval_state["rejected"] = False
-    _approval_state["rejection_reason"] = ""
-    raise ToolApprovalRequired(tool_name, arguments, preview)
+    """Register a pending approval request under its token and raise ToolApprovalRequired."""
+    token = _approval_store.request(tool_name, arguments, preview)
+    raise ToolApprovalRequired(tool_name, arguments, preview, token)
+
+
+def _gate_approval(tool_name: str, arguments: dict, preview: str, preview_type: str = "generic") -> None:
+    """Central approval gate every mutating tool routes through.
+
+    Raises ``ToolApprovalRequired`` when the call needs approval and it has not yet
+    been granted. It is a no-op when the policy does not require approval, when the
+    tool has been session-allowed, when git approval mode is off, or when a decision
+    has already been given for this exact token (which is then consumed so the
+    token is single-use). ``preview_type`` is retained for interface symmetry with
+    ``should_require_approval``.
+    """
+    del preview_type
+    ws = get_workspace()
+    req, _reason, _ptype = policy_manager.should_require_approval(tool_name, arguments, ws)
+    if not GIT_APPROVAL_MODE:
+        req = False
+    if not req:
+        return
+    if _approval_store.is_tool_allowed(tool_name):
+        return
+    token = _compute_approval_token(tool_name, arguments)
+    decision = get_approval_decision(token)
+    if decision is not None and decision["approved"]:
+        _approval_store.consume(token)
+        return
+    _request_approval(tool_name, arguments, preview)
 
 
 def set_workspace(path: str | Path) -> tuple[bool, str]:
@@ -1055,18 +1240,9 @@ def tool_write_file(path: str, content: str) -> str:
     try:
         p = _safe_path(path)
         manager = GitManager(get_workspace())
-        ws = get_workspace()
         arguments = {"path": path, "content": content}
-        req_approval, reason, _ = policy_manager.should_require_approval("write_file", arguments, ws)
-        if not GIT_APPROVAL_MODE:
-            req_approval = False
-
-        if req_approval and not _approval_state["always_allow"]:
-            preview = manager.get_diff_preview(path, content) if manager.is_repo() else f"Create/overwrite file: {path} ({len(content)} bytes)"
-            if not _approval_state["approved"] or _approval_state["tool_name"] != "write_file":
-                _request_approval("write_file", arguments, preview)
-            _approval_state["approved"] = False
-            _approval_state["tool_name"] = ""
+        preview = manager.get_diff_preview(path, content) if manager.is_repo() else f"Create/overwrite file: {path} ({len(content)} bytes)"
+        _gate_approval("write_file", arguments, preview, "diff")
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
         _update_code_index(path)
@@ -1077,6 +1253,8 @@ def tool_write_file(path: str, content: str) -> str:
                 _emit_tool_event({"type": "git_commit_created", "commit": commit_hash, "message": f"Update {path} with CoderAI", "files": [path]})
         suffix = f"; committed as {commit_hash[:8]}" if commit_hash else ""
         return f"File written: {path} ({p.stat().st_size:,} bytes){suffix}"
+    except ToolApprovalRequired:
+        raise
     except Exception as e:
         return f"Error: {e}"
 
@@ -1157,20 +1335,8 @@ def tool_run_bash(command: str) -> str:
     is_dangerous, danger_reason = _is_destructive_command(command)
     if is_dangerous:
         return f"Security Error: Command blocked due to potentially destructive system operation ({danger_reason})."
-    ws = get_workspace()
     arguments = {"command": command}
-    req_approval, reason, _ = policy_manager.should_require_approval("run_bash", arguments, ws)
-
-    if req_approval and not _approval_state["always_allow"]:
-        if not _approval_state["approved"] or _approval_state["tool_name"] != "run_bash":
-            _request_approval("run_bash", arguments, command)
-        # Clear approval flag after consuming it
-        _approval_state["approved"] = False
-        _approval_state["tool_name"] = ""
-    if _approval_state.get("rejected"):
-        reason = _approval_state.get("rejection_reason") or "User rejected execution."
-        _approval_state["rejected"] = False
-        return f"Execution rejected: {reason}"
+    _gate_approval("run_bash", arguments, command, "command")
 
     runner = SandboxRunner(
         workspace_path=get_workspace(),
@@ -1200,20 +1366,8 @@ def tool_run_bash(command: str) -> str:
 def tool_run_python(code: str) -> str:
     if is_execution_cancelled():
         return "Execution cancelled by user."
-    ws = get_workspace()
     arguments = {"code": code}
-    req_approval, reason, _ = policy_manager.should_require_approval("run_python", arguments, ws)
-
-    if req_approval and not _approval_state["always_allow"]:
-        if not _approval_state["approved"] or _approval_state["tool_name"] != "run_python":
-            _request_approval("run_python", arguments, code)
-        # Clear approval flag after consuming it
-        _approval_state["approved"] = False
-        _approval_state["tool_name"] = ""
-    if _approval_state.get("rejected"):
-        reason = _approval_state.get("rejection_reason") or "User rejected execution."
-        _approval_state["rejected"] = False
-        return f"Execution rejected: {reason}"
+    _gate_approval("run_python", arguments, code, "code")
 
     runner = SandboxRunner(
         workspace_path=get_workspace(),
@@ -1390,16 +1544,8 @@ def tool_replace_in_file(path: str, old: str, new: str, regex: bool = False, cou
         ws = get_workspace()
         manager = GitManager(ws)
         arguments = {"path": path, "old": old, "new": new, "regex": regex, "count": count}
-        req_approval, reason, _ = policy_manager.should_require_approval("replace_in_file", arguments, ws)
-        if not GIT_APPROVAL_MODE:
-            req_approval = False
-
-        if req_approval and not _approval_state["always_allow"]:
-            preview = manager.get_diff_preview(path, updated) if manager.is_repo() else f"Replace occurrences in {path}"
-            if not _approval_state["approved"] or _approval_state["tool_name"] != "replace_in_file":
-                _request_approval("replace_in_file", arguments, preview)
-            _approval_state["approved"] = False
-            _approval_state["tool_name"] = ""
+        preview = manager.get_diff_preview(path, updated) if manager.is_repo() else f"Replace occurrences in {path}"
+        _gate_approval("replace_in_file", arguments, preview, "diff")
         p.write_text(updated, encoding="utf-8")
         _update_code_index(path)
         commit_hash = ""
@@ -1409,6 +1555,8 @@ def tool_replace_in_file(path: str, old: str, new: str, regex: bool = False, cou
                 _emit_tool_event({"type": "git_commit_created", "commit": commit_hash, "message": f"Update {path} with CoderAI", "files": [path]})
         suffix = f" Committed as {commit_hash[:8]}." if commit_hash else ""
         return f"Replaced {changed} occurrence(s) in {path}.{suffix}"
+    except ToolApprovalRequired:
+        raise
     except Exception as e:
         return f"Error: {e}"
 
@@ -1804,6 +1952,7 @@ def execute_tool(name: str, arguments: dict | str) -> str | dict:
     except ToolApprovalRequired as exc:
         return json.dumps({
             "status": "approval_required",
+            "token": exc.token,
             "tool_name": exc.tool_name,
             "arguments": exc.arguments,
             "preview": exc.preview,
