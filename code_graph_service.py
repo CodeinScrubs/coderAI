@@ -40,6 +40,27 @@ COMMUNITY_COLORS = [
     "#EDC948", "#B07AA1", "#FF9DA7", "#9C755F", "#BAB0AC",
 ]
 
+# The query_code_graph tool advertises a short, human-friendly pattern set. The
+# installed code-review-graph engine uses different names. This maps the
+# advertised values onto the engine's pattern vocabulary so the tool is not dead.
+_ADVERTISED_TO_CRG: dict[str, str] = {
+    "calls": "callees_of",
+    "callers": "callers_of",
+    "imports": "imports_of",
+    "dependencies": "importers_of",
+    "extended_by": "inheritors_of",
+}
+
+
+def normalize_graph_pattern(pattern: str) -> str:
+    """Map an advertised query_code_graph pattern to the CRG engine's name.
+
+    Values the engine already knows are returned unchanged so either vocabulary
+    works. An unknown advertised pattern is returned as-is; the engine will
+    reject it with an "Unknown pattern" error, which query_graph surfaces.
+    """
+    return _ADVERTISED_TO_CRG.get(pattern, pattern)
+
 
 class CodeGraphService:
     """Manages AST knowledge graph indexing, queries, and blast-radius analysis."""
@@ -219,14 +240,25 @@ class CodeGraphService:
                 "error": "code-review-graph engine is not installed or unavailable.",
             }
         repo = self._resolve_repo(workspace_path)
+        engine_pattern = normalize_graph_pattern(pattern)
         try:
             res = query_graph(
-                pattern=pattern,
+                pattern=engine_pattern,
                 target=target,
                 repo_root=repo,
                 detail_level="standard",
                 max_results=100,
             )
+            # The engine signals a bad pattern (or other failure) with an inline
+            # status rather than raising; surface that as a service-level error so
+            # tool_query_code_graph returns the friendly failure message.
+            if isinstance(res, dict) and res.get("status") == "error":
+                return {
+                    "ok": False,
+                    "available": True,
+                    "repo": repo,
+                    "error": str(res.get("error", "graph query error")),
+                }
             return {
                 "ok": True,
                 "available": True,

@@ -147,16 +147,18 @@ class HindsightMemoryManager:
         # Local fallback via memory_manager
         try:
             from memory_manager import get_memory_manager
-            mm = get_memory_manager()
-            mm.add_fact(content_clean, category="hindsight_fallback")
+            mm = get_memory_manager(workspace_path)
+            fact_id = mm.index_fact(content_clean, source="hindsight_fallback")
             return {
                 "status": "retained_locally",
                 "bank_id": bank_id,
                 "engine": "local_fallback",
+                "id": fact_id,
                 "note": "Stored in local memory store because Hindsight server is offline.",
             }
         except Exception as e:
-            return {"status": "error", "error": str(e)}
+            logger.warning(f"Local memory fallback failed: {e}")
+            return {"status": "error", "error": f"Local memory fallback failed: {e}"}
 
     def recall(
         self,
@@ -201,8 +203,8 @@ class HindsightMemoryManager:
         # Fallback to local vector/memory store
         try:
             from memory_manager import get_memory_manager
-            mm = get_memory_manager()
-            local_facts = mm.get_relevant_facts(query_clean, limit=4)
+            mm = get_memory_manager(workspace_path)
+            local_facts = mm.retrieve_relevant(query_clean, top_k=4)
             if local_facts:
                 prompt_str = "\n".join(f"- {f.get('fact', '')}" for f in local_facts if f.get('fact'))
                 return {
@@ -211,10 +213,10 @@ class HindsightMemoryManager:
                     "engine": "local_fallback",
                     "bank_id": bank_id,
                 }
-        except Exception:
-            pass
-
-        return {"prompt_string": "", "count": 0, "engine": "none", "bank_id": bank_id}
+            return {"prompt_string": "", "count": 0, "engine": "local_fallback", "bank_id": bank_id}
+        except Exception as e:
+            logger.warning(f"Local recall fallback failed: {e}")
+            return {"prompt_string": "", "count": 0, "engine": "error", "bank_id": bank_id}
 
     def reflect(
         self,
@@ -243,12 +245,12 @@ class HindsightMemoryManager:
         # Local fallback
         try:
             from memory_manager import get_memory_manager
-            mm = get_memory_manager()
+            mm = get_memory_manager(workspace_path)
             summary = mm.get_summary()
             if summary:
                 return f"[Local Memory Reflection based on summary]:\n{summary}"
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Local reflection fallback failed: {e}")
         return "Hindsight reflection unavailable (server offline and no local summary found)."
 
     def get_status(self, workspace_path: str | Path | None = None) -> dict[str, Any]:

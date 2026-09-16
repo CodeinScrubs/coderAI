@@ -14,7 +14,8 @@ from tools import (
     is_execution_cancelled,
     set_workspace,
     get_workspace,
-    approve_pending,
+    clear_approval_state,
+    allow_tool_for_session,
     reset_cancel_flag,
 )
 from memory_manager import MemoryManager
@@ -25,7 +26,9 @@ def test_full_workspace_lifecycle_e2e(tmp_path):
     ws = tmp_path / "test_project"
     ws.mkdir(parents=True, exist_ok=True)
     set_workspace(ws)
-    approve_pending(always_allow_for_session=True)
+    clear_approval_state()
+    allow_tool_for_session("write_file")
+    allow_tool_for_session("run_python")
     reset_cancel_flag()
 
     # 1. Tool write and read file

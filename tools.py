@@ -12,6 +12,8 @@ import advanced_tools
 import json
 import uuid
 import re
+import hashlib
+import shlex
 import threading
 import urllib.request
 import urllib.error
@@ -138,16 +140,153 @@ def _update_code_index(path: str, deleted: bool = False) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class ToolApprovalRequired(Exception):
-    """Raised when a tool call requires explicit user approval before execution."""
-    def __init__(self, tool_name: str, arguments: dict, preview: str):
+    """Raised when a tool call requires explicit user approval before execution.
+
+    Carries the per-request approval ``token`` (a hash of the tool name and its
+    arguments) so the UI/backend can correlate an approve/reject decision with the
+    exact call that requested it, rather than keying on the tool name alone.
+    """
+
+    def __init__(self, tool_name: str, arguments: dict, preview: str, token: str = "") -> None:
         self.tool_name = tool_name
         self.arguments = arguments
         self.preview = preview
+        self.token = token
         super().__init__(f"Approval required for {tool_name}")
 
 
-_approval_state: dict = {
+def _compute_approval_token(tool_name: str, arguments: dict) -> str:
+    """Return a deterministic approval token for a tool call.
+
+    The token is the SHA-256 of the tool name and its arguments (key-ordered, so it
+    is independent of argument insertion order). Two calls of the same tool with
+    identical arguments share a token; a different argument or a different tool yields
+    a different token.
+    """
+    payload = json.dumps({"tool": tool_name, "args": arguments}, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+class _ApprovalStore:
+    """Token-keyed approval state, safe for concurrent agent loops.
+
+    Replaces the old single-slot, name-keyed global. Each pending request is stored
+    under its own token, a granted decision is single-use (consumed on re-execution,
+    so a token cannot be replayed), and the per-session "always allow" set is keyed by
+    *tool name* so approving one tool never auto-approves another.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._records: dict[str, dict] = {}
+        self._latest_pending_token: str | None = None
+        self._session_allow: set[str] = set()
+
+    @staticmethod
+    def _new_record(token: str, tool_name: str, arguments: dict, preview: str) -> dict:
+        return {
+            "token": token,
+            "tool_name": tool_name,
+            "arguments": arguments,
+            "preview": preview,
+            "pending": True,
+            "approved": False,
+            "rejected": False,
+            "rejection_reason": "",
+            "always_allow": False,
+        }
+
+    def request(self, tool_name: str, arguments: dict, preview: str) -> str:
+        """Register a new pending request; return its token."""
+        token = _compute_approval_token(tool_name, arguments)
+        with self._lock:
+            self._records[token] = self._new_record(token, tool_name, arguments, preview)
+            self._latest_pending_token = token
+        return token
+
+    def get_record(self, token: str) -> dict | None:
+        with self._lock:
+            record = self._records.get(token)
+            return dict(record) if record is not None else None
+
+    def resolve(
+        self,
+        token: str | None,
+        approved: bool,
+        always_allow: bool = False,
+        reason: str = "",
+    ) -> bool:
+        """Record an approve/reject decision for a token.
+
+        Returns True if a matching pending record was decided. A ``None``/empty token
+        falls back to the most recently requested pending request (back-compat for
+        clients that predate tokens). An ``always_allow`` approval opens the session for
+        that token's *tool name only*.
+        """
+        with self._lock:
+            tok = token or self._latest_pending_token
+            record = self._records.get(tok) if tok else None
+            if record is None or not record["pending"]:
+                return False
+            record["pending"] = False
+            record["approved"] = bool(approved)
+            record["rejected"] = not approved
+            record["rejection_reason"] = reason or ""
+            record["always_allow"] = bool(always_allow) and approved
+            if approved and always_allow:
+                self._session_allow.add(record["tool_name"])
+            return True
+
+    def consume(self, token: str) -> None:
+        """Drop a decided record after it has been honored (single-use)."""
+        with self._lock:
+            self._records.pop(token, None)
+
+    def decision(self, token: str) -> dict | None:
+        """Return the decision for a token, or None while it is still pending/unknown."""
+        with self._lock:
+            record = self._records.get(token)
+        if record is None or record["pending"]:
+            return None
+        return {
+            "approved": record["approved"],
+            "rejected": record["rejected"],
+            "rejection_reason": record["rejection_reason"],
+            "always_allow": record["always_allow"],
+        }
+
+    def allow_tool_for_session(self, tool_name: str) -> None:
+        with self._lock:
+            self._session_allow.add(tool_name)
+
+    def is_tool_allowed(self, tool_name: str) -> bool:
+        with self._lock:
+            return tool_name in self._session_allow
+
+    def latest_pending(self) -> dict | None:
+        """Return the most recently requested *pending* record, if any."""
+        with self._lock:
+            token = self._latest_pending_token
+            record = self._records.get(token) if token else None
+            if record is not None and record["pending"]:
+                return dict(record)
+            for tok, rec in reversed(list(self._records.items())):
+                if rec["pending"]:
+                    return dict(rec)
+        return None
+
+    def clear(self) -> None:
+        with self._lock:
+            self._records.clear()
+            self._latest_pending_token = None
+            self._session_allow.clear()
+
+
+_approval_store = _ApprovalStore()
+
+_EMPTY_APPROVAL_STATE: dict = {
     "pending": False,
+    "token": "",
     "tool_name": "",
     "arguments": {},
     "preview": "",
@@ -159,55 +298,102 @@ _approval_state: dict = {
 
 
 def get_approval_state() -> dict:
-    """Return a copy of the current approval state."""
-    return dict(_approval_state)
+    """Return a flat, UI-compatible snapshot of the latest pending approval request.
+
+    This is a superset of the legacy shape (it also carries ``token``) so the
+    ``/api/approval`` endpoint, the poll loop, and the UI keep working unchanged.
+    When no request is pending it returns an empty record with ``pending`` False.
+    """
+    record = _approval_store.latest_pending()
+    if record is None:
+        return dict(_EMPTY_APPROVAL_STATE)
+    return dict(record)
 
 
-def approve_pending(always_allow_for_session: bool = False) -> None:
-    """Mark the pending approval request as approved."""
-    global _approval_state
-    _approval_state["approved"] = True
-    _approval_state["rejected"] = False
-    _approval_state["pending"] = False
-    if always_allow_for_session:
-        _approval_state["always_allow"] = True
+def resolve_approval(
+    token: str,
+    approved: bool,
+    always_allow: bool = False,
+    reason: str = "",
+) -> bool:
+    """Record an approve/reject decision for a specific token.
+
+    Args:
+        token: The approval token returned in the ``approval_required`` payload.
+        approved: True to approve, False to reject.
+        always_allow: If approving, allow this tool for the rest of the session.
+        reason: Optional rejection reason.
+
+    Returns:
+        True if a matching pending request was decided, False otherwise.
+    """
+    return _approval_store.resolve(token, approved, always_allow, reason)
 
 
-def reject_pending(reason: str = "") -> None:
-    """Mark the pending approval request as rejected."""
-    global _approval_state
-    _approval_state["rejected"] = True
-    _approval_state["approved"] = False
-    _approval_state["pending"] = False
-    _approval_state["rejection_reason"] = reason or ""
+def get_approval_decision(token: str) -> dict | None:
+    """Return the decision for a token, or None while it is still pending.
+
+    The decision dict has keys ``approved``, ``rejected``, ``rejection_reason`` and
+    ``always_allow``. A ``None`` return means the poll loop should keep waiting.
+    """
+    return _approval_store.decision(token)
+
+
+def allow_tool_for_session(tool_name: str) -> None:
+    """Allow a tool to run without prompting for the rest of the session."""
+    _approval_store.allow_tool_for_session(tool_name)
+
+
+def approve_pending(always_allow_for_session: bool = False, token: str | None = None) -> None:
+    """Mark a pending approval request as approved.
+
+    Defaults to the most recently requested request when no token is supplied, so
+    legacy callers (and tests) keep working.
+    """
+    _approval_store.resolve(token, True, always_allow_for_session, "")
+
+
+def reject_pending(reason: str = "", token: str | None = None) -> None:
+    """Mark a pending approval request as rejected (back-compat wrapper)."""
+    _approval_store.resolve(token, False, False, reason or "")
 
 
 def clear_approval_state() -> None:
-    """Reset approval state (call on chat reset)."""
-    global _approval_state
-    _approval_state = {
-        "pending": False,
-        "tool_name": "",
-        "arguments": {},
-        "preview": "",
-        "approved": False,
-        "rejected": False,
-        "rejection_reason": "",
-        "always_allow": False,
-    }
+    """Reset all approval state and the per-session allow set (call on chat reset)."""
+    _approval_store.clear()
 
 
 def _request_approval(tool_name: str, arguments: dict, preview: str) -> None:
-    """Set pending approval state and raise ToolApprovalRequired."""
-    global _approval_state
-    _approval_state["pending"] = True
-    _approval_state["tool_name"] = tool_name
-    _approval_state["arguments"] = arguments
-    _approval_state["preview"] = preview
-    _approval_state["approved"] = False
-    _approval_state["rejected"] = False
-    _approval_state["rejection_reason"] = ""
-    raise ToolApprovalRequired(tool_name, arguments, preview)
+    """Register a pending approval request under its token and raise ToolApprovalRequired."""
+    token = _approval_store.request(tool_name, arguments, preview)
+    raise ToolApprovalRequired(tool_name, arguments, preview, token)
+
+
+def _gate_approval(tool_name: str, arguments: dict, preview: str, preview_type: str = "generic") -> None:
+    """Central approval gate every mutating tool routes through.
+
+    Raises ``ToolApprovalRequired`` when the call needs approval and it has not yet
+    been granted. It is a no-op when the policy does not require approval, when the
+    tool has been session-allowed, when git approval mode is off, or when a decision
+    has already been given for this exact token (which is then consumed so the
+    token is single-use). ``preview_type`` is retained for interface symmetry with
+    ``should_require_approval``.
+    """
+    del preview_type
+    ws = get_workspace()
+    req, _reason, _ptype = policy_manager.should_require_approval(tool_name, arguments, ws)
+    if not GIT_APPROVAL_MODE:
+        req = False
+    if not req:
+        return
+    if _approval_store.is_tool_allowed(tool_name):
+        return
+    token = _compute_approval_token(tool_name, arguments)
+    decision = get_approval_decision(token)
+    if decision is not None and decision["approved"]:
+        _approval_store.consume(token)
+        return
+    _request_approval(tool_name, arguments, preview)
 
 
 def set_workspace(path: str | Path) -> tuple[bool, str]:
@@ -1055,18 +1241,9 @@ def tool_write_file(path: str, content: str) -> str:
     try:
         p = _safe_path(path)
         manager = GitManager(get_workspace())
-        ws = get_workspace()
         arguments = {"path": path, "content": content}
-        req_approval, reason, _ = policy_manager.should_require_approval("write_file", arguments, ws)
-        if not GIT_APPROVAL_MODE:
-            req_approval = False
-
-        if req_approval and not _approval_state["always_allow"]:
-            preview = manager.get_diff_preview(path, content) if manager.is_repo() else f"Create/overwrite file: {path} ({len(content)} bytes)"
-            if not _approval_state["approved"] or _approval_state["tool_name"] != "write_file":
-                _request_approval("write_file", arguments, preview)
-            _approval_state["approved"] = False
-            _approval_state["tool_name"] = ""
+        preview = manager.get_diff_preview(path, content) if manager.is_repo() else f"Create/overwrite file: {path} ({len(content)} bytes)"
+        _gate_approval("write_file", arguments, preview, "diff")
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
         _update_code_index(path)
@@ -1077,6 +1254,8 @@ def tool_write_file(path: str, content: str) -> str:
                 _emit_tool_event({"type": "git_commit_created", "commit": commit_hash, "message": f"Update {path} with CoderAI", "files": [path]})
         suffix = f"; committed as {commit_hash[:8]}" if commit_hash else ""
         return f"File written: {path} ({p.stat().st_size:,} bytes){suffix}"
+    except ToolApprovalRequired:
+        raise
     except Exception as e:
         return f"Error: {e}"
 
@@ -1157,20 +1336,8 @@ def tool_run_bash(command: str) -> str:
     is_dangerous, danger_reason = _is_destructive_command(command)
     if is_dangerous:
         return f"Security Error: Command blocked due to potentially destructive system operation ({danger_reason})."
-    ws = get_workspace()
     arguments = {"command": command}
-    req_approval, reason, _ = policy_manager.should_require_approval("run_bash", arguments, ws)
-
-    if req_approval and not _approval_state["always_allow"]:
-        if not _approval_state["approved"] or _approval_state["tool_name"] != "run_bash":
-            _request_approval("run_bash", arguments, command)
-        # Clear approval flag after consuming it
-        _approval_state["approved"] = False
-        _approval_state["tool_name"] = ""
-    if _approval_state.get("rejected"):
-        reason = _approval_state.get("rejection_reason") or "User rejected execution."
-        _approval_state["rejected"] = False
-        return f"Execution rejected: {reason}"
+    _gate_approval("run_bash", arguments, command, "command")
 
     runner = SandboxRunner(
         workspace_path=get_workspace(),
@@ -1200,20 +1367,8 @@ def tool_run_bash(command: str) -> str:
 def tool_run_python(code: str) -> str:
     if is_execution_cancelled():
         return "Execution cancelled by user."
-    ws = get_workspace()
     arguments = {"code": code}
-    req_approval, reason, _ = policy_manager.should_require_approval("run_python", arguments, ws)
-
-    if req_approval and not _approval_state["always_allow"]:
-        if not _approval_state["approved"] or _approval_state["tool_name"] != "run_python":
-            _request_approval("run_python", arguments, code)
-        # Clear approval flag after consuming it
-        _approval_state["approved"] = False
-        _approval_state["tool_name"] = ""
-    if _approval_state.get("rejected"):
-        reason = _approval_state.get("rejection_reason") or "User rejected execution."
-        _approval_state["rejected"] = False
-        return f"Execution rejected: {reason}"
+    _gate_approval("run_python", arguments, code, "code")
 
     runner = SandboxRunner(
         workspace_path=get_workspace(),
@@ -1390,16 +1545,8 @@ def tool_replace_in_file(path: str, old: str, new: str, regex: bool = False, cou
         ws = get_workspace()
         manager = GitManager(ws)
         arguments = {"path": path, "old": old, "new": new, "regex": regex, "count": count}
-        req_approval, reason, _ = policy_manager.should_require_approval("replace_in_file", arguments, ws)
-        if not GIT_APPROVAL_MODE:
-            req_approval = False
-
-        if req_approval and not _approval_state["always_allow"]:
-            preview = manager.get_diff_preview(path, updated) if manager.is_repo() else f"Replace occurrences in {path}"
-            if not _approval_state["approved"] or _approval_state["tool_name"] != "replace_in_file":
-                _request_approval("replace_in_file", arguments, preview)
-            _approval_state["approved"] = False
-            _approval_state["tool_name"] = ""
+        preview = manager.get_diff_preview(path, updated) if manager.is_repo() else f"Replace occurrences in {path}"
+        _gate_approval("replace_in_file", arguments, preview, "diff")
         p.write_text(updated, encoding="utf-8")
         _update_code_index(path)
         commit_hash = ""
@@ -1409,6 +1556,8 @@ def tool_replace_in_file(path: str, old: str, new: str, regex: bool = False, cou
                 _emit_tool_event({"type": "git_commit_created", "commit": commit_hash, "message": f"Update {path} with CoderAI", "files": [path]})
         suffix = f" Committed as {commit_hash[:8]}." if commit_hash else ""
         return f"Replaced {changed} occurrence(s) in {path}.{suffix}"
+    except ToolApprovalRequired:
+        raise
     except Exception as e:
         return f"Error: {e}"
 
@@ -1416,11 +1565,17 @@ def tool_replace_in_file(path: str, old: str, new: str, regex: bool = False, cou
 def tool_append_file(path: str, content: str) -> str:
     try:
         p = _safe_path(path)
+        arguments = {"path": path, "content": content}
+        manager = GitManager(get_workspace())
+        preview = manager.get_diff_preview(path, content) if manager.is_repo() else f"Append {len(content)} bytes to: {path}"
+        _gate_approval("append_file", arguments, preview, "diff")
         p.parent.mkdir(parents=True, exist_ok=True)
         with p.open("a", encoding="utf-8") as f:
             f.write(content)
         _update_code_index(path)
         return f"Appended to file: {path} ({p.stat().st_size:,} bytes)"
+    except ToolApprovalRequired:
+        raise
     except Exception as e:
         return f"Error: {e}"
 
@@ -1471,9 +1626,15 @@ def tool_delete_file(path: str) -> str:
         p = _safe_path(path)
         if not p.exists():
             return f"File does not exist: {path}"
+        arguments = {"path": path}
+        manager = GitManager(get_workspace())
+        preview = manager.get_diff_preview(path, "") if manager.is_repo() else f"Delete file: {path} ({p.stat().st_size:,} bytes)"
+        _gate_approval("delete_file", arguments, preview, "diff")
         p.unlink()
         _update_code_index(path, deleted=True)
         return f"Deleted: {path}"
+    except ToolApprovalRequired:
+        raise
     except Exception as e:
         return f"Error: {e}"
 
@@ -1601,12 +1762,17 @@ def tool_remember_fact(content: str, context: str = "") -> str:
         from hindsight_manager import get_hindsight_manager
         hm = get_hindsight_manager()
         res = hm.retain(content=content, context=context)
+        status = res.get("status", "")
+        if status == "error":
+            return f"Failed to store memory: {res.get('error', 'unknown error')}"
+        if status == "skipped":
+            return f"Skipped storing memory: {res.get('reason', 'empty content')}"
         bank_id = res.get("bank_id", "default")
         if res.get("engine") == "hindsight":
             return f"Retained in Hindsight memory bank '{bank_id}': {content}"
         return f"Retained in local memory store (bank '{bank_id}'): {content}"
     except Exception as e:
-        return f"Error storing memory: {e}"
+        return f"Failed to store memory: {e}"
 
 
 def tool_recall_memory(query: str, limit: int = 5) -> str:
@@ -1681,6 +1847,192 @@ def tool_get_code_review_context(task: str = "", files: list[str] | None = None)
         return f"Error getting code review context: {exc}"
 
 
+# ── Advanced shell tool gating ─────────────────────────────────────────────────
+# The advanced shell tools used to run model-controlled strings via shell=True with
+# no approval. They are now gated behind the per-request approval token (see
+# _gate_approval) and, where they wrap a fixed binary, executed with argv lists or
+# through the sandboxed runner so shell metacharacters are not a second, ungated,
+# injection surface. All approval knowledge stays in tools.py so advanced_tools
+# remains a dumb executor (tools.py imports advanced_tools, not the other way).
+
+
+def _run_via_sandbox(command: str, timeout_seconds: int = 60) -> str:
+    """Run a shell command via SandboxRunner and format the result like tool_run_bash.
+
+    Keeps shell semantics (pipes, flags) while honoring the sandbox mode: Docker when
+    available, otherwise a local ``sh -c``. Returns a string with STDOUT/STDERR/exit
+    code so callers get a consistent, reviewable shape.
+    """
+    runner = SandboxRunner(
+        workspace_path=get_workspace(),
+        mode=SANDBOX_MODE,
+        docker_image=SANDBOX_DOCKER_IMAGE,
+        timeout_seconds=timeout_seconds,
+    )
+    result = runner.run_bash_command(
+        command=command,
+        env=_get_sanitized_env(),
+        process_register_cb=_register_process,
+    )
+    parts = []
+    if result.stdout and result.stdout.strip():
+        parts.append(f"STDOUT:\n{result.stdout.strip()}")
+    if result.stderr and result.stderr.strip():
+        parts.append(f"STDERR:\n{result.stderr.strip()}")
+    parts.append(f"exit code: {result.exit_code}")
+    if result.used_sandbox == "docker":
+        parts.append("(Executed inside Docker container sandbox)")
+    output = "\n\n".join(parts)
+    if len(output) > MAX_OUTPUT_CHARS:
+        output = output[:MAX_OUTPUT_CHARS] + "\n... [truncated]"
+    return output or "(empty output)"
+
+
+def _run_host_subprocess(argv: list[str], timeout_seconds: int = 60) -> str:
+    """Run a fixed-binary command as an argv list on the host (no shell).
+
+    Used for the Docker CLI tools, which must not be nested inside the Docker sandbox.
+    Arguments are passed as a list so shell metacharacters in the model input cannot
+    spawn extra processes.
+    """
+    try:
+        res = subprocess.run(
+            argv,
+            shell=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            cwd=str(get_workspace()),
+        )
+    except subprocess.TimeoutExpired:
+        return f"Command timed out after {timeout_seconds}s: {argv[0]}"
+    except FileNotFoundError as exc:
+        return f"Error: {exc}"
+    parts = []
+    if res.stdout and res.stdout.strip():
+        parts.append(f"STDOUT:\n{res.stdout.strip()}")
+    if res.stderr and res.stderr.strip():
+        parts.append(f"STDERR:\n{res.stderr.strip()}")
+    parts.append(f"exit code: {res.returncode}")
+    output = "\n\n".join(parts)
+    if len(output) > MAX_OUTPUT_CHARS:
+        output = output[:MAX_OUTPUT_CHARS] + "\n... [truncated]"
+    return output or "(empty output)"
+
+
+def _guarded_command(tool_name: str, arguments: dict, preview: str, run_fn) -> str:
+    """Shared seam for the advanced shell tools: approve first, then execute.
+
+    ``run_fn(arguments)`` is invoked only after the approval gate passes, so a
+    prompt-injected model cannot run these commands without an explicit user approval.
+    """
+    _gate_approval(tool_name, arguments, preview, "command")
+    return run_fn(arguments)
+
+
+# ── SQL tool gating (local SQLite only) ───────────────────────────────────────
+# execute_sql_query / get_database_schema used to accept a model-supplied connection
+# string (including remote databases) and commit arbitrary statements. They are now
+# restricted to a workspace-local SQLite file, and write statements require an
+# explicit approval (read-only SELECT/PRAGMA/EXPLAIN/WITH do not).
+
+
+def _resolve_sqlite_in_workspace(connection_string: str) -> tuple[Path | None, str | None]:
+    """Resolve a SQLite connection string to a workspace-local file.
+
+    Returns ``(path, None)`` on success or ``(None, error_message)`` on failure.
+    Only local SQLite files reachable by a workspace-relative path are accepted.
+    Any other scheme (postgresql://, mysql://, ...) or any path that escapes the
+    workspace is rejected, so a prompt cannot point the tool at a remote database.
+    """
+    cs = (connection_string or "").strip()
+    if not cs:
+        return None, "Error: empty connection string."
+
+    if "://" in cs:
+        scheme = cs.split("://", 1)[0].strip().lower()
+        if scheme != "sqlite":
+            return None, (f"Error: only local SQLite databases inside the workspace are "
+                          f"allowed. Got scheme '{scheme}'.")
+        candidate = cs.split("://", 1)[1].lstrip("/")
+    else:
+        candidate = cs[len("sqlite:"):] if cs.lower().startswith("sqlite:") else cs
+    candidate = candidate.strip()
+    if not candidate:
+        return None, "Error: no database path in connection string."
+
+    ws = get_workspace()
+    try:
+        target = (ws / candidate).resolve()
+        target.relative_to(ws.resolve())
+    except (ValueError, PermissionError):
+        return None, f"Error: database path must be inside the workspace: {cs}"
+    return target, None
+
+
+def _run_sql(path: Path, query: str) -> str:
+    """Run a single SQL statement against a local SQLite file and return its rows."""
+    import sqlite3
+    try:
+        conn = sqlite3.connect(str(path))
+    except Exception as e:
+        return f"Error connecting to database: {e}"
+    try:
+        cur = conn.execute(query)
+        if cur.description is not None:
+            rows = [dict(zip([d[0] for d in cur.description], row)) for row in cur.fetchall()]
+            return json.dumps(rows, indent=2, default=str)
+        conn.commit()
+        return "Query executed successfully. (No rows returned)"
+    except Exception as e:
+        return f"Error executing query: {e}"
+    finally:
+        conn.close()
+
+
+def _get_schema_sqlite(path: Path) -> str:
+    """Return the schema (tables + columns) of a local SQLite file."""
+    import sqlite3
+    try:
+        conn = sqlite3.connect(str(path))
+    except Exception as e:
+        return f"Error connecting to database: {e}"
+    try:
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        )]
+        if not tables:
+            return "No tables found."
+        info = []
+        for table in tables:
+            cols = [f"{c[1]} ({c[2]})" for c in conn.execute(f'PRAGMA table_info("{table}")')]
+            info.append(f"Table: {table}\n  Columns: {', '.join(cols)}")
+        return "\n".join(info)
+    except Exception as e:
+        return f"Error reading schema: {e}"
+    finally:
+        conn.close()
+
+
+def _guarded_sql_query(arguments: dict) -> str:
+    """Gated execute_sql_query: local-SQLite-only, write statements require approval."""
+    path, err = _resolve_sqlite_in_workspace(str(arguments.get("connection_string", "")))
+    if err:
+        return err
+    query = str(arguments.get("query", ""))
+    preview = query if len(query) <= 400 else query[:400] + "…"
+    _gate_approval("execute_sql_query", arguments, preview, "command")
+    return _run_sql(path, query)
+
+
+def _guarded_sql_schema(arguments: dict) -> str:
+    """Gated get_database_schema: local-SQLite-only, read-only reflection."""
+    path, err = _resolve_sqlite_in_workspace(str(arguments.get("connection_string", "")))
+    if err:
+        return err
+    return _get_schema_sqlite(path)
+
+
 # ── Dispatcher ─────────────────────────────────────────────────────────────────
 _HANDLERS: dict = {
     "read_file":    lambda a: tool_read_file(a["path"], a.get("start_line"), a.get("end_line"), a.get("mode", "raw")),
@@ -1715,18 +2067,47 @@ _HANDLERS: dict = {
     "git_diff": lambda a: tool_git_diff(a.get("staged", False)),
     "git_commit": lambda a: tool_git_commit(a.get("message"), a.get("files")),
     "git_checkout": lambda a: tool_git_checkout(a.get("branch"), a.get("create", False)),
-    "get_database_schema": lambda a: advanced_tools.tool_get_database_schema(a.get("connection_string", "")),
-    "execute_sql_query": lambda a: advanced_tools.tool_execute_sql_query(a.get("connection_string", ""), a.get("query", "")),
+    "get_database_schema": lambda a: _guarded_sql_schema(a),
+    "execute_sql_query": lambda a: _guarded_sql_query(a),
     "navigate_web": lambda a: advanced_tools.tool_navigate_web(a.get("url", "")),
     "take_screenshot": lambda a: advanced_tools.tool_take_screenshot(a.get("url", ""), a.get("output_path", "")),
-    "run_docker_container": lambda a: advanced_tools.tool_run_docker_container(a.get("image", ""), a.get("command", "")),
-    "get_container_logs": lambda a: advanced_tools.tool_get_container_logs(a.get("container_name_or_id", "")),
-    "run_linter": lambda a: advanced_tools.tool_run_linter(a.get("command", "flake8 .")),
-    "run_tests": lambda a: advanced_tools.tool_run_tests(a.get("command", "pytest")),
-    "run_kubectl": lambda a: advanced_tools.tool_run_kubectl(a.get("command", "")),
-    "run_terraform": lambda a: advanced_tools.tool_run_terraform(a.get("command", "")),
+    "run_docker_container": lambda a: _guarded_command(
+        "run_docker_container", a,
+        f"docker run --rm {a.get('image', '')}",
+        lambda a: _run_host_subprocess(
+            ["docker", "run", "--rm", *shlex.split((a.get("image", "") + " " + a.get("command", "")).strip())],
+            timeout_seconds=120,
+        ),
+    ),
+    "get_container_logs": lambda a: _guarded_command(
+        "get_container_logs", a,
+        f"docker logs {a.get('container_name_or_id', '')}",
+        lambda a: _run_host_subprocess(["docker", "logs", a.get("container_name_or_id", "")]),
+    ),
+    "run_linter": lambda a: _guarded_command(
+        "run_linter", a, a.get("command", "flake8 ."),
+        lambda a: _run_via_sandbox(a.get("command", "flake8 ."), timeout_seconds=60),
+    ),
+    "run_tests": lambda a: _guarded_command(
+        "run_tests", a, a.get("command", "pytest"),
+        lambda a: _run_via_sandbox(a.get("command", "pytest"), timeout_seconds=120),
+    ),
+    "run_kubectl": lambda a: _guarded_command(
+        "run_kubectl", a, f"kubectl {a.get('command', '')}",
+        lambda a: _run_via_sandbox(f"kubectl {a.get('command', '')}", timeout_seconds=60),
+    ),
+    "run_terraform": lambda a: _guarded_command(
+        "run_terraform", a, f"terraform {a.get('command', '')}",
+        lambda a: _run_via_sandbox(f"terraform {a.get('command', '')}", timeout_seconds=120),
+    ),
     "test_api_endpoint": lambda a: advanced_tools.tool_test_api_endpoint(a.get("url", ""), a.get("method", "GET"), a.get("headers"), a.get("json_body")),
-    "run_npm_script": lambda a: advanced_tools.tool_run_npm_script(a.get("script_name", ""), a.get("package_manager", "npm")),
+    "run_npm_script": lambda a: _guarded_command(
+        "run_npm_script", a,
+        f"{a.get('package_manager', 'npm')} run {a.get('script_name', '')}",
+        lambda a: _run_via_sandbox(
+            f"{a.get('package_manager', 'npm')} run {a.get('script_name', '')}", timeout_seconds=120
+        ),
+    ),
 }
 
 
@@ -1804,6 +2185,7 @@ def execute_tool(name: str, arguments: dict | str) -> str | dict:
     except ToolApprovalRequired as exc:
         return json.dumps({
             "status": "approval_required",
+            "token": exc.token,
             "tool_name": exc.tool_name,
             "arguments": exc.arguments,
             "preview": exc.preview,

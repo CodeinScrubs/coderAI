@@ -505,7 +505,7 @@ def create_app() -> FastAPI:
     async def approve_action(request: Request):
         data = await request.json()
         from tools import approve_pending, get_approval_state
-        approve_pending(bool(data.get("always_allow_for_session")))
+        approve_pending(bool(data.get("always_allow_for_session")), data.get("token"))
         return get_approval_state()
 
     @app.post("/api/approval/reject")
@@ -513,7 +513,7 @@ def create_app() -> FastAPI:
     async def reject_action(request: Request):
         data = await request.json()
         from tools import reject_pending, get_approval_state
-        reject_pending(data.get("reason", ""))
+        reject_pending(data.get("reason", ""), data.get("token"))
         return get_approval_state()
 
     @app.get("/api/policies")

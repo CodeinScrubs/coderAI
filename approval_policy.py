@@ -19,10 +19,24 @@ from typing import Any
 DEFAULT_GLOBAL_POLICY: dict[str, str] = {
     "write_file": "always",        # "always" (diff preview) | "auto"
     "replace_in_file": "always",    # "always" (diff preview) | "auto"
+    "delete_file": "always",        # "always" (diff preview) | "auto"
+    "append_file": "always",        # "always" (diff preview) | "auto"
     "run_bash": "dangerous_only",  # "always" | "dangerous_only" | "auto"
     "run_python": "always",        # "always" | "auto"
     "git_push": "always",          # "always" | "auto"
     "git_revert": "always",        # "always" | "auto"
+    # Advanced shell tools: they run external commands, so they require approval.
+    "run_linter": "always",        # "always" | "auto"
+    "run_tests": "always",         # "always" | "auto"
+    "run_kubectl": "always",       # "always" | "auto"
+    "run_terraform": "always",     # "always" | "auto"
+    "run_npm_script": "always",    # "always" | "auto"
+    "run_docker_container": "always",
+    "get_container_logs": "always",
+    # SQL: write statements need approval; read-only (SELECT/PRAGMA/EXPLAIN/WITH) does not.
+    "execute_sql_query": "write_only",
+    # Schema reflection is read-only.
+    "get_database_schema": "never",
 }
 
 DANGEROUS_BASH_PATTERNS: list[tuple[re.Pattern, str]] = [
@@ -49,6 +63,35 @@ def is_dangerous_bash(command: str) -> tuple[bool, str]:
         if pattern.search(cleaned):
             return True, description
     return False, ""
+
+
+_READONLY_SQL_KEYWORDS = frozenset({"SELECT", "PRAGMA", "EXPLAIN", "WITH"})
+
+
+def _is_readonly_sql(query: str) -> bool:
+    """Return True if a single SQL statement is read-only.
+
+    Leading ``--`` line comments and ``/* */`` block comments are stripped first so a
+    write statement hidden behind a comment is not treated as read-only. The first
+    remaining keyword decides: SELECT / PRAGMA / EXPLAIN / WITH (CTEs) are read-only;
+    everything else (INSERT/UPDATE/DELETE/DROP/ALTER/...) is a write. Only reliable
+    for a single statement against a local database, which is the scope these SQL
+    tools are restricted to.
+    """
+    s = query.strip()
+    # Strip a run of leading comments/whitespace.
+    while s:
+        s = s.lstrip()
+        if s.startswith("--"):
+            s = s.split("\n", 1)[1]
+            continue
+        if s.startswith("/*"):
+            end = s.find("*/")
+            s = s[end + 2:] if end != -1 else ""
+            continue
+        break
+    first = re.split(r"\s+", s, maxsplit=1)[0].upper() if s else ""
+    return first in _READONLY_SQL_KEYWORDS
 
 
 class ApprovalPolicyManager:
@@ -174,7 +217,7 @@ class ApprovalPolicyManager:
         rule = policy.get(tool_name, "always")
 
         # 1. File modification tools
-        if tool_name in {"write_file", "replace_in_file"}:
+        if tool_name in {"write_file", "replace_in_file", "delete_file", "append_file"}:
             if rule == "auto":
                 return False, "", "diff"
             return True, f"Policy requires review for {tool_name}", "diff"
@@ -196,6 +239,26 @@ class ApprovalPolicyManager:
             if rule == "auto":
                 return False, "", "code"
             return True, "Policy requires review for Python script execution", "code"
+
+        # 3b. Advanced shell tools (linter/tests/kubectl/terraform/npm/docker)
+        if tool_name in {
+            "run_linter", "run_tests", "run_kubectl", "run_terraform",
+            "run_npm_script", "run_docker_container", "get_container_logs",
+        }:
+            if rule == "auto":
+                return False, "", "command"
+            return True, f"Policy requires review for {tool_name}", "command"
+
+        # 3c. SQL query: only write statements need approval (default rule "write_only").
+        if tool_name == "execute_sql_query":
+            if rule in {"auto", "never"}:
+                return False, "", "command"
+            if _is_readonly_sql(str(arguments.get("query", ""))):
+                return False, "", "command"
+            return True, "SQL write statement requires review", "command"
+
+        # get_database_schema is read-only reflection (default rule "never") and falls
+        # through to the ungated return below.
 
         # 4. Git mutation tools
         if tool_name in {"git_push", "git_revert"}:

@@ -336,3 +336,23 @@ Node.js is only needed for these development tests, not to run the application. 
 
 - Tavily and Custom API keys are user-provided runtime settings.
 - Shell and Python execution tools run on the local machine inside the selected workspace. Only use this app with projects and prompts you trust.
+
+### Approval model
+
+Every mutating tool — file writes/appends/deletes/replacements, shell and Python
+execution, the advanced shell tools (linter, tests, kubectl, terraform, npm, docker),
+and non-read-only SQL — is gated behind **per-request approval** before it runs:
+
+- Each request carries a stable **approval token** (a hash of the tool + arguments),
+  so approving one action never silently authorizes a different one. "Always allow"
+  for a tool is scoped to that tool only, per session, and never leaks across tools.
+- File tools present a **diff preview** (or a creation summary); command tools show the
+  exact command; the browser and API both approve/reject by token.
+- The advanced shell tools no longer run model-controlled strings through a shell: fixed
+  binaries (kubectl/terraform/docker/npm) run as argv lists, and linter/tests run through
+  the sandboxed runner, so shell metacharacters are not a second, ungated injection path.
+- **SQL is local-only**: `execute_sql_query` and `get_database_schema` only reach a
+  workspace-local SQLite file. Remote schemes and paths outside the workspace are
+  rejected; read-only statements run unprompted, writes require approval.
+- `git push` keeps its separate explicit-confirmation flow and is not part of the
+  per-request token gate.
