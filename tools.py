@@ -1913,6 +1913,109 @@ def _guarded_command(tool_name: str, arguments: dict, preview: str, run_fn) -> s
     return run_fn(arguments)
 
 
+# ── SQL tool gating (local SQLite only) ───────────────────────────────────────
+# execute_sql_query / get_database_schema used to accept a model-supplied connection
+# string (including remote databases) and commit arbitrary statements. They are now
+# restricted to a workspace-local SQLite file, and write statements require an
+# explicit approval (read-only SELECT/PRAGMA/EXPLAIN/WITH do not).
+
+
+def _resolve_sqlite_in_workspace(connection_string: str) -> tuple[Path | None, str | None]:
+    """Resolve a SQLite connection string to a workspace-local file.
+
+    Returns ``(path, None)`` on success or ``(None, error_message)`` on failure.
+    Only local SQLite files reachable by a workspace-relative path are accepted.
+    Any other scheme (postgresql://, mysql://, ...) or any path that escapes the
+    workspace is rejected, so a prompt cannot point the tool at a remote database.
+    """
+    cs = (connection_string or "").strip()
+    if not cs:
+        return None, "Error: empty connection string."
+
+    if "://" in cs:
+        scheme = cs.split("://", 1)[0].strip().lower()
+        if scheme != "sqlite":
+            return None, (f"Error: only local SQLite databases inside the workspace are "
+                          f"allowed. Got scheme '{scheme}'.")
+        candidate = cs.split("://", 1)[1].lstrip("/")
+    else:
+        candidate = cs[len("sqlite:"):] if cs.lower().startswith("sqlite:") else cs
+    candidate = candidate.strip()
+    if not candidate:
+        return None, "Error: no database path in connection string."
+
+    ws = get_workspace()
+    try:
+        target = (ws / candidate).resolve()
+        target.relative_to(ws.resolve())
+    except (ValueError, PermissionError):
+        return None, f"Error: database path must be inside the workspace: {cs}"
+    return target, None
+
+
+def _run_sql(path: Path, query: str) -> str:
+    """Run a single SQL statement against a local SQLite file and return its rows."""
+    import sqlite3
+    try:
+        conn = sqlite3.connect(str(path))
+    except Exception as e:
+        return f"Error connecting to database: {e}"
+    try:
+        cur = conn.execute(query)
+        if cur.description is not None:
+            rows = [dict(zip([d[0] for d in cur.description], row)) for row in cur.fetchall()]
+            return json.dumps(rows, indent=2, default=str)
+        conn.commit()
+        return "Query executed successfully. (No rows returned)"
+    except Exception as e:
+        return f"Error executing query: {e}"
+    finally:
+        conn.close()
+
+
+def _get_schema_sqlite(path: Path) -> str:
+    """Return the schema (tables + columns) of a local SQLite file."""
+    import sqlite3
+    try:
+        conn = sqlite3.connect(str(path))
+    except Exception as e:
+        return f"Error connecting to database: {e}"
+    try:
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        )]
+        if not tables:
+            return "No tables found."
+        info = []
+        for table in tables:
+            cols = [f"{c[1]} ({c[2]})" for c in conn.execute(f'PRAGMA table_info("{table}")')]
+            info.append(f"Table: {table}\n  Columns: {', '.join(cols)}")
+        return "\n".join(info)
+    except Exception as e:
+        return f"Error reading schema: {e}"
+    finally:
+        conn.close()
+
+
+def _guarded_sql_query(arguments: dict) -> str:
+    """Gated execute_sql_query: local-SQLite-only, write statements require approval."""
+    path, err = _resolve_sqlite_in_workspace(str(arguments.get("connection_string", "")))
+    if err:
+        return err
+    query = str(arguments.get("query", ""))
+    preview = query if len(query) <= 400 else query[:400] + "…"
+    _gate_approval("execute_sql_query", arguments, preview, "command")
+    return _run_sql(path, query)
+
+
+def _guarded_sql_schema(arguments: dict) -> str:
+    """Gated get_database_schema: local-SQLite-only, read-only reflection."""
+    path, err = _resolve_sqlite_in_workspace(str(arguments.get("connection_string", "")))
+    if err:
+        return err
+    return _get_schema_sqlite(path)
+
+
 # ── Dispatcher ─────────────────────────────────────────────────────────────────
 _HANDLERS: dict = {
     "read_file":    lambda a: tool_read_file(a["path"], a.get("start_line"), a.get("end_line"), a.get("mode", "raw")),
@@ -1947,8 +2050,8 @@ _HANDLERS: dict = {
     "git_diff": lambda a: tool_git_diff(a.get("staged", False)),
     "git_commit": lambda a: tool_git_commit(a.get("message"), a.get("files")),
     "git_checkout": lambda a: tool_git_checkout(a.get("branch"), a.get("create", False)),
-    "get_database_schema": lambda a: advanced_tools.tool_get_database_schema(a.get("connection_string", "")),
-    "execute_sql_query": lambda a: advanced_tools.tool_execute_sql_query(a.get("connection_string", ""), a.get("query", "")),
+    "get_database_schema": lambda a: _guarded_sql_schema(a),
+    "execute_sql_query": lambda a: _guarded_sql_query(a),
     "navigate_web": lambda a: advanced_tools.tool_navigate_web(a.get("url", "")),
     "take_screenshot": lambda a: advanced_tools.tool_take_screenshot(a.get("url", ""), a.get("output_path", "")),
     "run_docker_container": lambda a: _guarded_command(
