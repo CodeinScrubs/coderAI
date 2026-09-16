@@ -50,6 +50,8 @@ from context_builder import (
 )
 from tool_parser import repair_json_tool_arguments, extract_fallback_tool_calls_from_text
 from session_manager import SessionStore, build_project_cards
+from plan_mode.http_api import dispatch as plan_dispatch
+from plan_mode.adapters import build_default_service
 
 APPROVAL_POLL_INTERVAL = float(os.getenv("AGENT_APPROVAL_POLL_INTERVAL", "1.0"))
 APPROVAL_TIMEOUT = int(os.getenv("AGENT_APPROVAL_TIMEOUT", "600"))
@@ -745,6 +747,48 @@ def _write_stream_event(handler: BaseHTTPRequestHandler, event: dict) -> None:
     payload = (json.dumps(event, ensure_ascii=False, default=_json_default) + "\n").encode("utf-8")
     handler.wfile.write(payload)
     handler.wfile.flush()
+
+
+# --- Plan Mode ------------------------------------------------------------
+#
+# Plan Mode is a modular, cleanly-architected service (see the plan_mode package).
+# The web app is only a thin adapter: it forwards /api/plans* requests to the
+# pure dispatch() handler, which returns an HTTP status + JSON payload. Plans are
+# persisted to coderai_data/plans so they survive a restart. A module-level lock
+# guards the (cheap) service construction and serializes dispatches.
+_PLAN_SERVICE_LOCK = threading.Lock()
+_PLAN_SERVICE = None
+
+
+def _get_plan_service():
+    """Return the process-wide PlanModeService, building it on first use.
+
+    Returns:
+        A wired :class:`plan_mode.application.service.PlanModeService`.
+    """
+    global _PLAN_SERVICE
+    if _PLAN_SERVICE is None:
+        with _PLAN_SERVICE_LOCK:
+            if _PLAN_SERVICE is None:
+                _PLAN_SERVICE = build_default_service(directory="coderai_data/plans")
+    return _PLAN_SERVICE
+
+
+def dispatch_plan_request(method: str, path: str, body: dict | None) -> tuple[int, dict]:
+    """Route a /api/plans* request to the Plan Mode service.
+
+    This is the single seam between the HTTP handler and the plan_mode package.
+    It keeps web_app free of Plan Mode logic so the service stays unit-testable.
+
+    Args:
+        method: the HTTP method.
+        path: the request path.
+        body: the decoded JSON body (may be empty).
+
+    Returns:
+        ``(status_code, payload)`` — payload is JSON-serializable.
+    """
+    return plan_dispatch(method, path, body, _get_plan_service())
 
 
 def _read_json(handler: BaseHTTPRequestHandler) -> dict:
@@ -2223,6 +2267,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
+        if path == "/api/plans" or path.startswith("/api/plans/"):
+            status, payload = dispatch_plan_request("GET", path, {})
+            _send_json(self, payload, status)
+            return
         if path == "/api/approval":
             _send_json(self, get_approval_state())
             return
@@ -2392,6 +2440,10 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             data = _read_json(self)
+            if path == "/api/plans" or path.startswith("/api/plans/"):
+                status, payload = dispatch_plan_request("POST", path, data)
+                _send_json(self, payload, status)
+                return
             if path == "/api/workspace":
                 ok, msg = _activate_workspace_memory(data.get("path", ""))
                 _send_json(self, {"ok": ok, "message": msg, "workspace": _workspace_snapshot()}, 200 if ok else 400)
