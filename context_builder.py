@@ -67,6 +67,71 @@ def compact_tool_output(content: str, max_chars: int = 1500, tool_name: str = ""
     return clip_for_context(content, max_chars)
 
 
+def _split_top_level(value: str, sep: str = ",") -> list[str]:
+    """Split *value* on *sep* occurring outside ()/[]/{} and strings."""
+    parts: list[str] = []
+    depth = 0
+    quote = ""
+    current: list[str] = []
+    for ch in value:
+        if quote:
+            current.append(ch)
+            if ch == quote:
+                quote = ""
+            continue
+        if ch in "'\"":
+            quote = ch
+            current.append(ch)
+            continue
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth = max(0, depth - 1)
+        if ch == sep and depth == 0:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+    parts.append("".join(current))
+    return parts
+
+
+def _strip_python_type_hints(signature: str) -> str:
+    """Normalize a Python function/method signature for outline display.
+
+    Drops the return annotation and each parameter's annotation/default so the
+    outline reads as plain parameter names, e.g.
+    ``def process(self, items: list) -> int`` -> ``def process(self, items)``.
+    Non-call input (no parentheses) is returned unchanged.
+    """
+    value = signature.strip().rstrip(":").strip()
+    arrow = re.search(r"\s*->\s*", value)
+    if arrow:
+        value = value[: arrow.start()].strip()
+    open_idx = value.find("(")
+    close_idx = -1
+    if open_idx != -1:
+        depth = 0
+        for i in range(open_idx, len(value)):
+            if value[i] == "(":
+                depth += 1
+            elif value[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    close_idx = i
+                    break
+    if open_idx == -1 or close_idx == -1:
+        return value
+    head = value[:open_idx].strip()
+    params = value[open_idx + 1 : close_idx].strip()
+    cleaned: list[str] = []
+    for part in _split_top_level(params):
+        name = re.split(r"[:=]", part, maxsplit=1)[0].strip()
+        if name:
+            cleaned.append(name)
+    return f"{head}({', '.join(cleaned)})"
+
+
 def extract_code_outline(code: str, file_path: str = "") -> str:
     """Extracts a structural symbol outline (classes, functions, methods, line numbers) using Tree-sitter AST."""
     if not code:
@@ -113,10 +178,13 @@ def extract_code_outline(code: str, file_path: str = "") -> str:
             if m:
                 symbols.append(f"Line {i}: {m.group(1)}")
                 continue
-            m = re.match(r"^((?:async\s+)?def\s+[a-zA-Z0-9_]+\([^)]*\)):", stripped)
+            # Python def — with or without a return annotation
+            # (``def f(a: int) -> str:``). Annotations are stripped so the
+            # outline reads as plain parameter names.
+            m = re.match(r"^(?:async\s+)?def\s+[a-zA-Z0-9_]+\([^)]*\)\s*(?:->\s*.+?)?\s*:", stripped)
             if m:
                 indent = "  " if line.startswith(("    ", "\t")) else ""
-                symbols.append(f"{indent}Line {i}: {m.group(1)}")
+                symbols.append(f"{indent}Line {i}: {_strip_python_type_hints(stripped)}")
                 continue
             m = re.match(r"^(?:export\s+)?(?:default\s+)?(?:class|function|interface|type)\s+([a-zA-Z0-9_]+)", stripped)
             if m:

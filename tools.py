@@ -1379,11 +1379,16 @@ def tool_replace_in_file(path: str, old: str, new: str, regex: bool = False, cou
         if regex:
             updated, changed = re.subn(old, new, text, count=max(0, int(count or 0)))
         else:
-            changed = text.count(old) if int(count or 0) == 0 else min(text.count(old), int(count))
-            updated = text.replace(old, new, int(count or 0))
+            # count == 0 (the default) means "replace all matches". str.replace
+            # treats 0 as "replace nothing", so 0 must map to -1 for a real
+            # replace-all. A positive count caps the number of replacements.
+            limit = -1 if int(count or 0) == 0 else int(count)
+            changed = text.count(old) if limit < 0 else min(text.count(old), limit)
+            updated = text.replace(old, new, limit)
         if updated == text:
             return f"No replacements were made: {path}"
         ws = get_workspace()
+        manager = GitManager(ws)
         arguments = {"path": path, "old": old, "new": new, "regex": regex, "count": count}
         req_approval, reason, _ = policy_manager.should_require_approval("replace_in_file", arguments, ws)
         if not GIT_APPROVAL_MODE:

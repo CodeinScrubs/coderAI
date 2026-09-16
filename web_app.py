@@ -1320,7 +1320,10 @@ def _available_models(force: bool = False) -> dict:
                 except Exception:
                     pass
             if not names:
-                names = ["gpt-4o-mini", "gpt-4o", "claude-3-5-sonnet", "deepseek-chat"]
+                # Listing is unavailable (offline / endpoint error). Show the
+                # configured custom model rather than a hardcoded list of
+                # generic names that likely don't exist on this vendor.
+                names = [selected] if selected else ["gpt-4o-mini", "gpt-4o", "claude-3-5-sonnet", "deepseek-chat"]
             return {"models": names, "selected_model": selected, "error": None}
     except Exception as e:
         return {"models": [_active_model()], "selected_model": _active_model(), "error": str(e)}
