@@ -73,6 +73,7 @@ The folder-based package may start faster and is usually better for future insta
 ├── launcher.py                 # EXE-friendly launcher that opens the browser
 ├── tools.py                    # Tool schemas and tool execution handlers
 ├── context_builder.py          # LeanCTX prompt compressor, AST outlines, and token budget manager
+├── plan_mode/                  # Plan Mode service: domain, application, adapters, http_api
 ├── code_graph_service.py       # Code-review-graph integration: AST call-graph indexing & blast radius
 ├── hindsight_manager.py        # Vectorize Hindsight client adapter, bank scoping, and local fallback
 ├── git_manager.py              # Git clone, diff, checkpoint, commit, push, and revert layer
@@ -265,6 +266,30 @@ Virtual environments and dependency directories are pruned before traversal. Fol
 
 The Windows portable executable includes the built-in Ollama HTTP runtime, SQLite/FTS5 indexing, project dependency graphs, persistent memory, Git integration, and the complete web UI. Optional Python integrations are used when bundled in a build; otherwise the application falls back to its built-in runtime and SQLite retrieval. Ollama itself remains a separate local application and must be running when Local Ollama mode is selected.
 
+## Plan Mode
+
+Plan Mode lets the agent **explore the codebase read-only, propose a set of
+concrete steps, and wait for approval before executing anything**. It is the
+task-level counterpart to the per-tool approval policies: multi-file work is
+reviewed *as a plan* before a single mutating tool runs.
+
+It is a modular, cleanly-architected service (`plan_mode/`) split into
+`domain` (state machine + fail-closed tool gate), `application` (use cases),
+`adapters` (storage, tool execution, workspace), and `http_api` (request
+handlers). The web app is only a thin adapter over `/api/plans*`.
+
+- **Fail-closed tool gate** — a tool is allowed in read-only states only if it
+  is explicitly classified read-only; unknown tools are treated as mutating and
+  blocked. Mutating tools run only after the plan is approved.
+- **Lifecycle** — `IDLE → EXPLORING → DRAFTING → AWAITING_APPROVAL → EXECUTING →
+  DONE`, with `REJECTED` / `CANCELLED` and an "edit plan" path back to draft.
+- **Persistence** — plans are stored under `coderai_data/plans` (one JSON file
+  each) and survive a restart.
+
+The surface is the JSON API (`GET /api/plans`, `POST /api/plans`, and
+`.../{id}/{explore,draft,approve,reject,edit,execute,cancel}`); a dedicated UI
+and FastAPI route parity are out of scope for now. See [docs/PLAN_MODE.md](docs/PLAN_MODE.md).
+
 ## Features & Roadmap Status
 
 - [x] Per-tool and per-workspace approval policies (`approval_policy.py`).
@@ -272,6 +297,7 @@ The Windows portable executable includes the built-in Ollama HTTP runtime, SQLit
 - [x] Optional `sqlite-vec` acceleration for the SQLite semantic fallback.
 - [x] LeanCTX-inspired token compression, structural AST code outlining, and history code compaction.
 - [x] Vectorize Hindsight biomimetic long-term memory integration with workspace-scoped banks and dual fallback.
+- [x] Plan Mode: explore → draft → approve → execute with a fail-closed tool gate (`plan_mode/`), exposed over `/api/plans*` (API only; UI deferred).
 - [ ] Add tree-sitter structural chunking for JavaScript, TypeScript, Java, and additional languages.
 - [ ] Add richer skill validation, diagnostics, and execution traces.
 - [ ] Add opt-in background fact extraction with review before facts become durable memory.
