@@ -5,7 +5,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 
-from code_graph_service import CodeGraphService, code_graph_service
+import code_graph_service as cgs_module
+from code_graph_service import CodeGraphService, code_graph_service, normalize_graph_pattern
 from tools import (
     tool_get_project_architecture,
     tool_get_impact_radius,
@@ -45,6 +46,73 @@ def test_code_graph_service_disabled_fallback():
     review_ctx = service.get_minimal_context("dummy/path", changed_files=["foo.py"])
     assert review_ctx.get("ok") is False
     assert review_ctx.get("available") is False
+
+
+def test_normalize_graph_pattern_maps_all_advertised():
+    """Every advertised query_code_graph pattern maps onto the engine's name."""
+    expected = {
+        "calls": "callees_of",
+        "callers": "callers_of",
+        "imports": "imports_of",
+        "dependencies": "importers_of",
+        "extended_by": "inheritors_of",
+    }
+    for advertised, engine_name in expected.items():
+        assert normalize_graph_pattern(advertised) == engine_name
+    # Names the engine already knows pass through unchanged.
+    assert normalize_graph_pattern("callees_of") == "callees_of"
+    # Unknown values pass through unchanged so the engine can reject them.
+    assert normalize_graph_pattern("nonsense") == "nonsense"
+
+
+def test_query_graph_translates_advertised_pattern_before_engine_call():
+    """query_graph must hand the CRG engine the translated pattern, not the alias."""
+    with patch.object(cgs_module, "query_graph") as fake:
+        fake.return_value = {"status": "ok", "pattern": "callees_of", "results": []}
+        code_graph_service.query_graph("calls", "some_symbol", "dummy/path")
+    fake.assert_called_once()
+    _, kwargs = fake.call_args
+    assert kwargs["pattern"] == "callees_of"
+    assert kwargs["target"] == "some_symbol"
+
+
+def test_query_graph_unknown_pattern_surfaces_error():
+    """An untranslatable advertised pattern yields ok:False with the engine error."""
+    with patch.object(cgs_module, "query_graph") as fake:
+        fake.return_value = {"status": "error", "error": "Unknown pattern 'calls'."}
+        res = code_graph_service.query_graph("calls", "x", "dummy/path")
+    assert res["ok"] is False
+    assert "error" in res
+    assert "Unknown pattern" in res["error"]
+
+
+def test_query_graph_engine_error_status_is_not_ok():
+    """An engine status=='error' payload must not be reported as a success."""
+    with patch.object(cgs_module, "query_graph") as fake:
+        fake.return_value = {"status": "error", "error": "boom"}
+        res = code_graph_service.query_graph("calls", "x", "dummy/path")
+    assert res["ok"] is False
+    assert res.get("error") == "boom"
+
+
+def test_query_code_graph_advertised_pattern_not_unknown():
+    """End-to-end: 'calls' on a real temp repo is translated and no longer says Unknown pattern."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+        with open(os.path.join(tmpdir, "main.py"), "w", encoding="utf-8") as f:
+            f.write(
+                "def b():\n"
+                "    return 1\n\n"
+                "def a():\n"
+                "    return b()\n"
+            )
+        old_ws = get_workspace()
+        set_workspace(Path(tmpdir))
+        try:
+            code_graph_service.build_or_update(tmpdir)
+            out = execute_tool("query_code_graph", {"pattern": "calls", "symbol": "a"})
+            assert "Unknown pattern" not in out
+        finally:
+            set_workspace(old_ws)
 
 
 def test_code_graph_service_real_build():
