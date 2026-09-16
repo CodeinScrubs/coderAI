@@ -71,3 +71,8 @@ core/
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# test coverage artifacts
+.coverage
+.coverage.*
+coverage.xml
