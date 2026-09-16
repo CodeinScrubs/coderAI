@@ -23,6 +23,14 @@ DEFAULT_GLOBAL_POLICY: dict[str, str] = {
     "run_python": "always",        # "always" | "auto"
     "git_push": "always",          # "always" | "auto"
     "git_revert": "always",        # "always" | "auto"
+    # Advanced shell tools: they run external commands, so they require approval.
+    "run_linter": "always",        # "always" | "auto"
+    "run_tests": "always",         # "always" | "auto"
+    "run_kubectl": "always",       # "always" | "auto"
+    "run_terraform": "always",     # "always" | "auto"
+    "run_npm_script": "always",    # "always" | "auto"
+    "run_docker_container": "always",
+    "get_container_logs": "always",
 }
 
 DANGEROUS_BASH_PATTERNS: list[tuple[re.Pattern, str]] = [
@@ -196,6 +204,15 @@ class ApprovalPolicyManager:
             if rule == "auto":
                 return False, "", "code"
             return True, "Policy requires review for Python script execution", "code"
+
+        # 3b. Advanced shell tools (linter/tests/kubectl/terraform/npm/docker)
+        if tool_name in {
+            "run_linter", "run_tests", "run_kubectl", "run_terraform",
+            "run_npm_script", "run_docker_container", "get_container_logs",
+        }:
+            if rule == "auto":
+                return False, "", "command"
+            return True, f"Policy requires review for {tool_name}", "command"
 
         # 4. Git mutation tools
         if tool_name in {"git_push", "git_revert"}:

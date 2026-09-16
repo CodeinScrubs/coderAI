@@ -13,6 +13,7 @@ import json
 import uuid
 import re
 import hashlib
+import shlex
 import threading
 import urllib.request
 import urllib.error
@@ -1829,6 +1830,89 @@ def tool_get_code_review_context(task: str = "", files: list[str] | None = None)
         return f"Error getting code review context: {exc}"
 
 
+# ── Advanced shell tool gating ─────────────────────────────────────────────────
+# The advanced shell tools used to run model-controlled strings via shell=True with
+# no approval. They are now gated behind the per-request approval token (see
+# _gate_approval) and, where they wrap a fixed binary, executed with argv lists or
+# through the sandboxed runner so shell metacharacters are not a second, ungated,
+# injection surface. All approval knowledge stays in tools.py so advanced_tools
+# remains a dumb executor (tools.py imports advanced_tools, not the other way).
+
+
+def _run_via_sandbox(command: str, timeout_seconds: int = 60) -> str:
+    """Run a shell command via SandboxRunner and format the result like tool_run_bash.
+
+    Keeps shell semantics (pipes, flags) while honoring the sandbox mode: Docker when
+    available, otherwise a local ``sh -c``. Returns a string with STDOUT/STDERR/exit
+    code so callers get a consistent, reviewable shape.
+    """
+    runner = SandboxRunner(
+        workspace_path=get_workspace(),
+        mode=SANDBOX_MODE,
+        docker_image=SANDBOX_DOCKER_IMAGE,
+        timeout_seconds=timeout_seconds,
+    )
+    result = runner.run_bash_command(
+        command=command,
+        env=_get_sanitized_env(),
+        process_register_cb=_register_process,
+    )
+    parts = []
+    if result.stdout and result.stdout.strip():
+        parts.append(f"STDOUT:\n{result.stdout.strip()}")
+    if result.stderr and result.stderr.strip():
+        parts.append(f"STDERR:\n{result.stderr.strip()}")
+    parts.append(f"exit code: {result.exit_code}")
+    if result.used_sandbox == "docker":
+        parts.append("(Executed inside Docker container sandbox)")
+    output = "\n\n".join(parts)
+    if len(output) > MAX_OUTPUT_CHARS:
+        output = output[:MAX_OUTPUT_CHARS] + "\n... [truncated]"
+    return output or "(empty output)"
+
+
+def _run_host_subprocess(argv: list[str], timeout_seconds: int = 60) -> str:
+    """Run a fixed-binary command as an argv list on the host (no shell).
+
+    Used for the Docker CLI tools, which must not be nested inside the Docker sandbox.
+    Arguments are passed as a list so shell metacharacters in the model input cannot
+    spawn extra processes.
+    """
+    try:
+        res = subprocess.run(
+            argv,
+            shell=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            cwd=str(get_workspace()),
+        )
+    except subprocess.TimeoutExpired:
+        return f"Command timed out after {timeout_seconds}s: {argv[0]}"
+    except FileNotFoundError as exc:
+        return f"Error: {exc}"
+    parts = []
+    if res.stdout and res.stdout.strip():
+        parts.append(f"STDOUT:\n{res.stdout.strip()}")
+    if res.stderr and res.stderr.strip():
+        parts.append(f"STDERR:\n{res.stderr.strip()}")
+    parts.append(f"exit code: {res.returncode}")
+    output = "\n\n".join(parts)
+    if len(output) > MAX_OUTPUT_CHARS:
+        output = output[:MAX_OUTPUT_CHARS] + "\n... [truncated]"
+    return output or "(empty output)"
+
+
+def _guarded_command(tool_name: str, arguments: dict, preview: str, run_fn) -> str:
+    """Shared seam for the advanced shell tools: approve first, then execute.
+
+    ``run_fn(arguments)`` is invoked only after the approval gate passes, so a
+    prompt-injected model cannot run these commands without an explicit user approval.
+    """
+    _gate_approval(tool_name, arguments, preview, "command")
+    return run_fn(arguments)
+
+
 # ── Dispatcher ─────────────────────────────────────────────────────────────────
 _HANDLERS: dict = {
     "read_file":    lambda a: tool_read_file(a["path"], a.get("start_line"), a.get("end_line"), a.get("mode", "raw")),
@@ -1867,14 +1951,43 @@ _HANDLERS: dict = {
     "execute_sql_query": lambda a: advanced_tools.tool_execute_sql_query(a.get("connection_string", ""), a.get("query", "")),
     "navigate_web": lambda a: advanced_tools.tool_navigate_web(a.get("url", "")),
     "take_screenshot": lambda a: advanced_tools.tool_take_screenshot(a.get("url", ""), a.get("output_path", "")),
-    "run_docker_container": lambda a: advanced_tools.tool_run_docker_container(a.get("image", ""), a.get("command", "")),
-    "get_container_logs": lambda a: advanced_tools.tool_get_container_logs(a.get("container_name_or_id", "")),
-    "run_linter": lambda a: advanced_tools.tool_run_linter(a.get("command", "flake8 .")),
-    "run_tests": lambda a: advanced_tools.tool_run_tests(a.get("command", "pytest")),
-    "run_kubectl": lambda a: advanced_tools.tool_run_kubectl(a.get("command", "")),
-    "run_terraform": lambda a: advanced_tools.tool_run_terraform(a.get("command", "")),
+    "run_docker_container": lambda a: _guarded_command(
+        "run_docker_container", a,
+        f"docker run --rm {a.get('image', '')}",
+        lambda a: _run_host_subprocess(
+            ["docker", "run", "--rm", *shlex.split((a.get("image", "") + " " + a.get("command", "")).strip())],
+            timeout_seconds=120,
+        ),
+    ),
+    "get_container_logs": lambda a: _guarded_command(
+        "get_container_logs", a,
+        f"docker logs {a.get('container_name_or_id', '')}",
+        lambda a: _run_host_subprocess(["docker", "logs", a.get("container_name_or_id", "")]),
+    ),
+    "run_linter": lambda a: _guarded_command(
+        "run_linter", a, a.get("command", "flake8 ."),
+        lambda a: _run_via_sandbox(a.get("command", "flake8 ."), timeout_seconds=60),
+    ),
+    "run_tests": lambda a: _guarded_command(
+        "run_tests", a, a.get("command", "pytest"),
+        lambda a: _run_via_sandbox(a.get("command", "pytest"), timeout_seconds=120),
+    ),
+    "run_kubectl": lambda a: _guarded_command(
+        "run_kubectl", a, f"kubectl {a.get('command', '')}",
+        lambda a: _run_via_sandbox(f"kubectl {a.get('command', '')}", timeout_seconds=60),
+    ),
+    "run_terraform": lambda a: _guarded_command(
+        "run_terraform", a, f"terraform {a.get('command', '')}",
+        lambda a: _run_via_sandbox(f"terraform {a.get('command', '')}", timeout_seconds=120),
+    ),
     "test_api_endpoint": lambda a: advanced_tools.tool_test_api_endpoint(a.get("url", ""), a.get("method", "GET"), a.get("headers"), a.get("json_body")),
-    "run_npm_script": lambda a: advanced_tools.tool_run_npm_script(a.get("script_name", ""), a.get("package_manager", "npm")),
+    "run_npm_script": lambda a: _guarded_command(
+        "run_npm_script", a,
+        f"{a.get('package_manager', 'npm')} run {a.get('script_name', '')}",
+        lambda a: _run_via_sandbox(
+            f"{a.get('package_manager', 'npm')} run {a.get('script_name', '')}", timeout_seconds=120
+        ),
+    ),
 }
 
 
