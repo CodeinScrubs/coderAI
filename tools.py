@@ -1762,12 +1762,17 @@ def tool_remember_fact(content: str, context: str = "") -> str:
         from hindsight_manager import get_hindsight_manager
         hm = get_hindsight_manager()
         res = hm.retain(content=content, context=context)
+        status = res.get("status", "")
+        if status == "error":
+            return f"Failed to store memory: {res.get('error', 'unknown error')}"
+        if status == "skipped":
+            return f"Skipped storing memory: {res.get('reason', 'empty content')}"
         bank_id = res.get("bank_id", "default")
         if res.get("engine") == "hindsight":
             return f"Retained in Hindsight memory bank '{bank_id}': {content}"
         return f"Retained in local memory store (bank '{bank_id}'): {content}"
     except Exception as e:
-        return f"Error storing memory: {e}"
+        return f"Failed to store memory: {e}"
 
 
 def tool_recall_memory(query: str, limit: int = 5) -> str:

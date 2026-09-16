@@ -321,6 +321,19 @@ class MemoryManager:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def get_summary(self, limit: int = 50) -> str:
+        """Return a short plain-text summary of the project's stored facts.
+
+        Used as the local-fallback reflection: it lists the most recently updated
+        facts so an offline Hindsight still has something concrete to reflect on.
+        Returns an empty string when no facts have been stored.
+        """
+        facts = self.list_facts(limit=limit)
+        if not facts:
+            return ""
+        lines = [f"- {row['fact']}" for row in facts if row.get("fact")]
+        return "\n".join(lines)
+
     def update_fact(self, fact_id: int, fact: str, source: str = "") -> None:
         with self._write_lock, self._connect() as db:
             if self.vector_store == "sqlite-fts5":
@@ -400,3 +413,20 @@ class MemoryManager:
         record = {"timestamp": time.time(), "action": action, "project_id": self.project_id, **payload}
         with self._write_lock, self.audit_path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def get_memory_manager(workspace_path: str | Path | None = None) -> "MemoryManager":
+    """Return a MemoryManager bound to *workspace_path* (or the active workspace).
+
+    A fresh instance is returned on every call so callers never hold a manager
+    whose project binding predates a workspace switch. When *workspace_path* is
+    omitted, the current workspace is resolved lazily from ``tools`` (the import is
+    deferred to avoid a circular dependency at module load time).
+    """
+    if workspace_path is None:
+        try:
+            from tools import get_workspace
+            workspace_path = get_workspace()
+        except Exception:
+            workspace_path = default_storage_root()
+    return MemoryManager(workspace_path)

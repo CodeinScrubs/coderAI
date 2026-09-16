@@ -1,6 +1,54 @@
 from pathlib import Path
 
-from memory_manager import MemoryManager
+from memory_manager import MemoryManager, get_memory_manager
+
+
+def test_get_memory_manager_is_fresh_and_workspace_bound(tmp_path: Path):
+    storage = tmp_path / "app-data"
+    project_a = tmp_path / "project-a"
+    project_b = tmp_path / "project-b"
+    project_a.mkdir()
+    project_b.mkdir()
+
+    manager_a = get_memory_manager(project_a)
+    manager_b = get_memory_manager(project_a)
+    # A fresh instance is returned on every call (no shared stale singleton).
+    assert manager_a is not manager_b
+    # But both bind to the same workspace/project.
+    assert manager_a.workspace_path == manager_b.workspace_path
+    assert manager_a.project_id == manager_b.project_id
+
+    manager_c = get_memory_manager(project_b)
+    assert manager_c.project_id != manager_a.project_id
+
+
+def test_get_memory_manager_default_uses_active_workspace(tmp_path: Path, monkeypatch):
+    from tools import get_workspace, set_workspace
+
+    ws = tmp_path / "active-ws"
+    ws.mkdir()
+    old_ws = get_workspace()
+    set_workspace(ws)
+    monkeypatch.setenv("CODERAI_DATA_DIR", str(tmp_path / "data"))
+    try:
+        manager = get_memory_manager()
+        assert manager.workspace_path == ws.resolve()
+    finally:
+        monkeypatch.delenv("CODERAI_DATA_DIR", raising=False)
+        set_workspace(old_ws)
+
+
+def test_get_summary_lists_facts_and_is_empty_when_none(tmp_path: Path):
+    storage = tmp_path / "app-data"
+    project = tmp_path / "project"
+    project.mkdir()
+    manager = MemoryManager(project, storage_root=storage)
+
+    assert manager.get_summary() == ""
+
+    manager.index_fact("Use FastAPI for the API layer", source="note")
+    summary = manager.get_summary()
+    assert "Use FastAPI for the API layer" in summary
 
 
 def managers(tmp_path: Path):

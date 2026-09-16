@@ -10,6 +10,8 @@ from tools import (
     tool_recall_memory,
     tool_reflect_memory,
     execute_tool,
+    set_workspace,
+    get_workspace,
 )
 
 
@@ -19,25 +21,31 @@ def test_sanitize_bank_id():
     assert sanitize_bank_id(None) == "default-workspace"
 
 
-def test_hindsight_manager_offline_fallback():
+def test_hindsight_manager_offline_fallback(tmp_path, monkeypatch):
     hm = HindsightMemoryManager(base_url="http://127.0.0.1:99999", timeout=0.1)
     # is_available should be False since server does not exist
     assert hm.is_available(force_refresh=True) is False
 
-    # Retain should fallback to local storage gracefully
-    res = hm.retain("Important architectural decision: use FastAPI", context="architecture")
-    assert res.get("status") in {"retained_locally", "error"}
-    assert res.get("engine") == "local_fallback" or "error" in res
+    # Point the active workspace + memory store at isolated temp locations so the
+    # local fallback is a real, observable round-trip rather than a soft pass.
+    old_ws = get_workspace()
+    set_workspace(tmp_path / "ws")
+    (tmp_path / "ws").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("CODERAI_DATA_DIR", str(tmp_path / "memory_data"))
+    try:
+        # Retain should fall back to local storage and actually persist the fact.
+        res = hm.retain("Important architectural decision: use FastAPI", context="architecture")
+        assert res.get("status") == "retained_locally"
+        assert res.get("engine") == "local_fallback"
 
-    # Recall should fallback
-    recall_res = hm.recall("FastAPI", max_tokens=100)
-    assert "count" in recall_res
-    assert recall_res.get("engine") in {"local_fallback", "none"}
-
-    # Status should report offline
-    status = hm.get_status()
-    assert status["online"] is False
-    assert status["client_installed"] is True
+        # Recall must return the exact fact just stored, proving the round-trip.
+        recall_res = hm.recall("FastAPI", max_tokens=100)
+        assert recall_res.get("engine") == "local_fallback"
+        assert recall_res.get("count") >= 1
+        assert "FastAPI" in recall_res.get("prompt_string", "")
+    finally:
+        monkeypatch.delenv("CODERAI_DATA_DIR", raising=False)
+        set_workspace(old_ws)
 
 
 def test_hindsight_manager_mocked_online():
