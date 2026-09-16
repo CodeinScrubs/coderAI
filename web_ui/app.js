@@ -621,8 +621,8 @@ async function resumeProjectSession(sessionId) {
   renderState(await api("/api/memory/session/resume", { method: "POST", body: JSON.stringify({ session_id: sessionId }) }));
   showWorkbench(); 
   setActiveActivity("Agent");
-  activateTab("chat");
-  if (promptInput) promptInput.focus();
+  activateTab("files");
+  const pi = document.getElementById("promptInput"); if (pi) pi.focus();
 }
 
 function renderMemory(memory) {

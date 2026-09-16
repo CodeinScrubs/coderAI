@@ -60,7 +60,7 @@ def create_app() -> FastAPI:
     @app.get("/api/settings")
     async def get_state(request: Request):
         sid = request.headers.get("x-session-id") or request.query_params.get("session_id")
-        return web_app._client_state(sid)
+        return web_app._client_state()
 
     @app.get("/api/hindsight/status")
     async def get_hindsight_status():
@@ -268,7 +268,7 @@ def create_app() -> FastAPI:
         web_app.STATE["memory_retrieved_facts"] = []
         web_app.STATE["memory_context"] = ""
         sid = request.headers.get("x-session-id")
-        return web_app._client_state(sid)
+        return web_app._client_state()
 
     @app.post("/api/memory/fact")
     async def memory_fact(request: Request):
@@ -315,7 +315,7 @@ def create_app() -> FastAPI:
         web_app.STATE["memory_retrieved_facts"] = []
         web_app.STATE["memory_context"] = ""
         sid = request.headers.get("x-session-id")
-        return web_app._client_state(sid)
+        return web_app._client_state()
 
     @app.post("/api/memory/compact")
     async def memory_compact(request: Request):
@@ -325,7 +325,7 @@ def create_app() -> FastAPI:
         except Exception:
             pass
         sid = request.headers.get("x-session-id")
-        return web_app._client_state(sid)
+        return web_app._client_state()
 
     @app.post("/api/clear")
     async def clear_session(request: Request):
@@ -536,7 +536,7 @@ def create_app() -> FastAPI:
         max_files = int(data.get("max_files", 200))
         result = web_app.tool_scan_project(max_files)
         sid = request.headers.get("x-session-id")
-        return {"result": result, "state": web_app._client_state(sid)}
+        return {"result": result, "state": web_app._client_state()}
 
     @app.post("/api/skills/mode")
     async def skill_mode(request: Request):
@@ -549,7 +549,7 @@ def create_app() -> FastAPI:
         if data.get("workspace_path"):
             return {"skill_usage": web_app._skill_usage_payload(target_workspace)}
         sid = request.headers.get("x-session-id")
-        return web_app._client_state(sid)
+        return web_app._client_state()
 
     @app.post("/api/skills/disable")
     async def skill_disable(request: Request):
@@ -606,7 +606,7 @@ def create_app() -> FastAPI:
             web_app.STATE["selected_prompt"] = None
             web_app.STATE["system_prompt"] = data.get("system_prompt") or web_app.DEFAULT_SYSTEM_PROMPT
         sid = request.headers.get("x-session-id")
-        return web_app._client_state(sid)
+        return web_app._client_state()
 
     @app.get("/api/index")
     async def get_index():
@@ -776,7 +776,7 @@ def create_app() -> FastAPI:
                     web_app.STATE["agent_running"] = False
                     await websocket.send_text(json.dumps({
                         "type": "cancelled",
-                        "state": web_app._client_state(sid),
+                        "state": web_app._client_state(),
                     }))
 
                 elif action == "ping":
@@ -802,7 +802,7 @@ def create_app() -> FastAPI:
                         finally:
                             try:
                                 asyncio.run_coroutine_threadsafe(
-                                    websocket.send_text(json.dumps({"type": "done", "state": web_app._client_state(sid)}, default=web_app._json_default)),
+                                    websocket.send_text(json.dumps({"type": "done", "state": web_app._client_state()}, default=web_app._json_default)),
                                     loop,
                                 )
                             except Exception:
