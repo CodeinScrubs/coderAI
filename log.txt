@@ -1,0 +1,1648 @@
+commit 7c9fb8acc048bc83006cc24a67cf779860273843
+Author: mohamadreza1368 <mohamadreza1368@users.noreply.github.com>
+Date:   Thu Sep 17 18:02:13 2026 +0330
+
+    fix: Auto-strip /chat/completions from Custom API URL to prevent 404 errors
+
+diff --git a/agent_runtime.py b/agent_runtime.py
+index b8088d3..9546269 100644
+--- a/agent_runtime.py
++++ b/agent_runtime.py
+@@ -110,6 +110,8 @@ class LangChainRuntime:
+ 
+             api_key = settings.custom_api_key or "not-needed"
+             base_url = settings.custom_api_url.rstrip("/") if settings.custom_api_url else "https://api.openai.com/v1"
++            if base_url.endswith("/chat/completions"):
++                base_url = base_url[:-17]
+ 
+             return ChatOpenAI(
+                 model=settings.model,
+diff --git a/patch_url.py b/patch_url.py
+new file mode 100644
+index 0000000..dedb89c
+--- /dev/null
++++ b/patch_url.py
+@@ -0,0 +1,42 @@
++import pathlib
++
++path = pathlib.Path('E:/llm_projects/agantic_ai/ollama_workspace_v4/agent_runtime.py')
++text = path.read_text('utf-8')
++
++old = '''            api_key = settings.custom_api_key or "not-needed"
++            base_url = settings.custom_api_url.rstrip("/") if settings.custom_api_url else "https://api.openai.com/v1"
++
++            return ChatOpenAI('''
++
++new = '''            api_key = settings.custom_api_key or "not-needed"
++            base_url = settings.custom_api_url.rstrip("/") if settings.custom_api_url else "https://api.openai.com/v1"
++            if base_url.endswith("/chat/completions"):
++                base_url = base_url[:-17]
++
++            return ChatOpenAI('''
++
++text = text.replace(old, new)
++path.write_text(text, 'utf-8')
++
++path2 = pathlib.Path('E:/llm_projects/agantic_ai/ollama_workspace_v4/web_app.py')
++text2 = path2.read_text('utf-8')
++
++old2 = '''      tool_call_deltas: dict[int, dict] = {}
++      finish_reason = ""
++      for event in _post_json_stream(
++          f"{STATE['custom_api_url'].rstrip('/')}/chat/completions",'''
++
++new2 = '''      tool_call_deltas: dict[int, dict] = {}
++      finish_reason = ""
++      
++      base_url = STATE['custom_api_url'].rstrip('/')
++      if base_url.endswith("/chat/completions"):
++          base_url = base_url[:-17]
++          
++      for event in _post_json_stream(
++          f"{base_url}/chat/completions",'''
++
++text2 = text2.replace(old2, new2)
++path2.write_text(text2, 'utf-8')
++
++print("Fixed double /chat/completions")
+
+commit 828eb29e9c6269764378823fe81015281483d0f8
+Author: mohamadreza1368 <mohamadreza1368@users.noreply.github.com>
+Date:   Thu Sep 17 17:33:06 2026 +0330
+
+    fix: Robust JSON parsing and fallback to Langchain streaming for Custom API
+
+diff --git a/patch_json_stream.py b/patch_json_stream.py
+new file mode 100644
+index 0000000..2bdf917
+--- /dev/null
++++ b/patch_json_stream.py
+@@ -0,0 +1,75 @@
++import pathlib
++
++path = pathlib.Path('E:/llm_projects/agantic_ai/ollama_workspace_v4/web_app.py')
++text = path.read_text('utf-8')
++
++old = '''    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
++        for raw_line in resp:
++            line = raw_line.decode("utf-8", errors="replace").strip()
++            if not line:
++                continue
++            # Ignore SSE comment and keep-alive lines (e.g. ": ping", ": keepalive")
++            if line.startswith(":"):
++                continue
++            if line.startswith("event:") or line.startswith("id:") or line.startswith("retry:"):
++                continue
++            if line.startswith("data:"):
++                line = line[5:].strip()
++            if not line:
++                continue
++            if line == "[DONE]":
++                break
++            try:
++                yield json.loads(line)
++            except json.JSONDecodeError:
++                pass'''
++
++new = '''    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
++        content_type = resp.headers.get("Content-Type", "")
++        if "application/json" in content_type:
++            raw = resp.read().decode("utf-8", errors="replace")
++            try:
++                data = json.loads(raw)
++            except Exception:
++                data = {"error": "Invalid JSON response", "raw": raw}
++            if "error" in data:
++                raise ValueError(f"API Error: {data['error']}")
++            yield data
++            return
++
++        for raw_line in resp:
++            line = raw_line.decode("utf-8", errors="replace").strip()
++            if not line:
++                continue
++            if line.startswith(":"):
++                continue
++            if line.startswith("event:") or line.startswith("id:") or line.startswith("retry:"):
++                continue
++            if line.startswith("data:"):
++                line = line[5:].strip()
++            if not line:
++                continue
++            if line == "[DONE]":
++                break
++            try:
++                yield json.loads(line)
++            except json.JSONDecodeError:
++                pass'''
++
++text = text.replace(old, new)
++
++# Also fix the Custom API stream parsing to check for errors
++old_custom = '''        choices = event.get("choices", []) if isinstance(event, dict) else []
++        if not choices:
++            continue'''
++
++new_custom = '''        choices = event.get("choices", []) if isinstance(event, dict) else []
++        if not choices:
++            if isinstance(event, dict) and "error" in event:
++                raise ValueError(f"API Error: {event['error']}")
++            continue'''
++
++text = text.replace(old_custom, new_custom)
++
++path.write_text(text, 'utf-8')
++print("Patched web_app.py error handling")
+diff --git a/patch_langchain_stream.py b/patch_langchain_stream.py
+new file mode 100644
+index 0000000..bd8690d
+--- /dev/null
++++ b/patch_langchain_stream.py
+@@ -0,0 +1,19 @@
++import pathlib
++
++path = pathlib.Path('E:/llm_projects/agantic_ai/ollama_workspace_v4/web_app.py')
++text = path.read_text('utf-8')
++
++old = '''def _use_langchain_streaming_runtime() -> bool:
++    return os.getenv("AGENT_USE_LANGCHAIN_STREAMING", "false").lower() in {"1", "true", "yes"}'''
++
++new = '''def _use_langchain_streaming_runtime() -> bool:
++    if "custom" in str(STATE.get("conn_mode", "")).lower():
++        return True
++    return os.getenv("AGENT_USE_LANGCHAIN_STREAMING", "false").lower() in {"1", "true", "yes"}'''
++
++if "STATE.get(\"conn_mode\"" not in text.split("def _use_langchain_streaming_runtime")[1][:200]:
++    text = text.replace(old, new)
++    path.write_text(text, 'utf-8')
++    print("Enabled langchain streaming for Custom API")
++else:
++    print("Already enabled")
+diff --git a/web_app.py b/web_app.py
+index 0ba5f55..a44bbfd 100644
+--- a/web_app.py
++++ b/web_app.py
+@@ -1529,6 +1529,8 @@ def _use_langchain_runtime() -> bool:
+ 
+ 
+ def _use_langchain_streaming_runtime() -> bool:
++    if "custom" in str(STATE.get("conn_mode", "")).lower():
++        return True
+     return os.getenv("AGENT_USE_LANGCHAIN_STREAMING", "false").lower() in {"1", "true", "yes"}
+ 
+ 
+@@ -1691,6 +1693,8 @@ def _call_model_stream(history: list[dict], write_event) -> dict:
+             break
+         choices = event.get("choices", []) if isinstance(event, dict) else []
+         if not choices:
++            if isinstance(event, dict) and "error" in event:
++                raise ValueError(f"API Error: {event['error']}")
+             continue
+         finish_reason = choices[0].get("finish_reason") or finish_reason
+         delta = choices[0].get("delta", {}) or {}
+
+commit f883f0d1b01c36938f3b30b7ed7ccfd06ae58fa4
+Author: mohamadreza1368 <mohamadreza1368@users.noreply.github.com>
+Date:   Thu Sep 17 14:39:57 2026 +0330
+
+    feat: Add OpenCode features (Named Args, Changes tab, Fallback engine, TUI)
+
+diff --git a/add_handler.py b/add_handler.py
+new file mode 100644
+index 0000000..f801a82
+--- /dev/null
++++ b/add_handler.py
+@@ -0,0 +1,69 @@
++import pathlib
++
++path = pathlib.Path('E:/llm_projects/agantic_ai/ollama_workspace_v4/tools.py')
++text = path.read_text('utf-8')
++
++handler_code = '''
++def tool_run_command(command: str, timeout: int = 30) -> str:
++    import subprocess
++    try:
++        ws = get_workspace()
++        timeout = max(5, min(int(timeout or 30), 120))
++        
++        arguments = {"command": command, "timeout": timeout}
++        _gate_approval("run_command", arguments, f"Execute command in {ws}:\\n{command}", "diff")
++        
++        # Check if the command is destructive (re-using _is_destructive_command from tools.py)
++        is_dangerous, reason = _is_destructive_command(command)
++        if is_dangerous:
++            return f"Error: Command rejected for safety reasons: {reason}"
++        
++        creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
++        
++        result = subprocess.run(
++            command,
++            shell=True,
++            cwd=str(ws),
++            capture_output=True,
++            text=True,
++            encoding="utf-8",
++            errors="replace",
++            timeout=timeout,
++            creationflags=creationflags
++        )
++        
++        output = result.stdout
++        if result.stderr:
++            output += "\\n[STDERR]:\\n" + result.stderr
++            
++        if not output.strip():
++            output = "Command executed successfully with no output."
++            
++        if result.returncode != 0:
++            output = f"Command exited with code {result.returncode}\\n{output}"
++            
++        # truncate if too long
++        if len(output) > 8000:
++            output = output[:8000] + "\\n... [truncated]"
++            
++        return output
++    except subprocess.TimeoutExpired:
++        return f"Error: Command timed out after {timeout} seconds."
++    except ToolApprovalRequired:
++        raise
++    except Exception as e:
++        return f"Error executing command: {e}"
++'''
++
++if "def tool_run_command" not in text:
++    # Insert right before tool_list_files
++    text = text.replace('def tool_list_files(', handler_code + '\n\ndef tool_list_files(')
++    
++    # Add to _HANDLERS
++    text = text.replace('"write_file":   lambda a: tool_write_file(a["path"], a["content"]),', 
++                        '"write_file":   lambda a: tool_write_file(a["path"], a["content"]),\n    "run_command":  lambda a: tool_run_command(a["command"], a.get("timeout", 30)),')
++    
++    path.write_text(text, 'utf-8')
++    print("Handler added.")
++else:
++    print("Handler already exists.")
+diff --git a/add_schema.py b/add_schema.py
+new file mode 100644
+index 0000000..219e041
+--- /dev/null
++++ b/add_schema.py
+@@ -0,0 +1,28 @@
++import pathlib
++
++path = pathlib.Path('E:/llm_projects/agantic_ai/ollama_workspace_v4/tools.py')
++text = path.read_text('utf-8')
++
++schema_addition = '''    {
++        "type": "function",
++        "function": {
++            "name": "run_command",
++            "description": "Execute a shell command in the workspace to run tests, build the project, or check status.",
++            "parameters": {
++                "type": "object",
++                "properties": {
++                    "command": {"type": "string", "description": "The command to execute (e.g., 'pytest', 'npm install')"},
++                    "timeout": {"type": "integer", "description": "Timeout in seconds (default 30, max 120)"}
++                },
++                "required": ["command"]
++            }
++        }
++    },'''
++
++# Insert the schema into TOOL_SCHEMAS
++if "run_command" not in text:
++    text = text.replace('TOOL_SCHEMAS = [', 'TOOL_SCHEMAS = [\n' + schema_addition)
++    path.write_text(text, 'utf-8')
++    print("Schema added.")
++else:
++    print("Schema already exists.")
+diff --git a/launcher.py b/launcher.py
+index 03d55e5..52dea3b 100644
+--- a/launcher.py
++++ b/launcher.py
+@@ -4,6 +4,7 @@ import os
+ import socket
+ import threading
+ import webbrowser
++import sys
+ 
+ 
+ def _find_free_port(start: int = 7864, attempts: int = 20) -> int:
+@@ -16,6 +17,11 @@ def _find_free_port(start: int = 7864, attempts: int = 20) -> int:
+ 
+ 
+ def main() -> None:
++    if "--cli" in sys.argv:
++        import tui_app
++        tui_app.main()
++        return
++
+     os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+     os.environ.setdefault("LITELLM_LOG", "ERROR")
+     os.environ.setdefault("AGENT_REQUEST_TIMEOUT", "1800")
+diff --git a/patch_app_changes.py b/patch_app_changes.py
+new file mode 100644
+index 0000000..92db6c0
+--- /dev/null
++++ b/patch_app_changes.py
+@@ -0,0 +1,64 @@
++import pathlib
++
++path = pathlib.Path('E:/llm_projects/agantic_ai/ollama_workspace_v4/web_ui/app.js')
++text = path.read_text('utf-8')
++
++old = '''function activateTab(tabId) {
++  document.querySelectorAll(".workspace-tabs .tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === tabId));
++  document.querySelectorAll(".tab-page").forEach((p) => {
++    p.classList.toggle("active", p.id === ${tabId}Tab);
++    if (p.id === ${tabId}Tab) {
++      p.style.display = "flex";
++    } else {
++      p.style.display = "none";
++    }
++  });
++}'''
++
++new = '''function activateTab(tabId) {
++  document.querySelectorAll(".workspace-tabs .tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === tabId));
++  document.querySelectorAll(".tab-page").forEach((p) => {
++    p.classList.toggle("active", p.id === ${tabId}Tab);
++    if (p.id === ${tabId}Tab) {
++      p.style.display = "flex";
++    } else {
++      p.style.display = "none";
++    }
++  });
++  if (tabId === "changes") {
++    refreshSessionChanges();
++  }
++}
++
++async function refreshSessionChanges() {
++    const list = sessionChangesList;
++    if (!list) return;
++    list.innerHTML = "<div style='padding: 1rem; color: var(--text-muted);'>Loading changes...</div>";
++    try {
++        const response = await api("/api/git/status");
++        if (response.error) {
++            list.innerHTML = <div style='padding: 1rem; color: var(--danger-color);'></div>;
++            return;
++        }
++        const files = response.status?.files || [];
++        if (files.length === 0) {
++            list.innerHTML = "<div style='padding: 1rem; color: var(--text-muted);'>No uncommitted changes in this session.</div>";
++            return;
++        }
++        list.innerHTML = files.map(f => 
++            <div class="file-item" style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem;">
++                <span class="file-name" style="flex: 1; word-break: break-all;"></span>
++                <span class="file-status" style="color: var(--accent-color); font-size: 0.8rem; margin-left: 0.5rem; text-transform: uppercase;"></span>
++            </div>
++        ).join("");
++    } catch (e) {
++        list.innerHTML = <div style='padding: 1rem; color: var(--danger-color);'>Failed to load changes: </div>;
++    }
++}
++'''
++if "refreshSessionChanges" not in text:
++    text = text.replace(old, new)
++    path.write_text(text, 'utf-8')
++    print("Added logic to app.js")
++else:
++    print("Already added logic")
+diff --git a/patch_app_changes2.py b/patch_app_changes2.py
+new file mode 100644
+index 0000000..2a81071
+--- /dev/null
++++ b/patch_app_changes2.py
+@@ -0,0 +1,22 @@
++import pathlib
++
++path = pathlib.Path('E:/llm_projects/agantic_ai/ollama_workspace_v4/web_ui/app.js')
++text = path.read_text('utf-8')
++
++old = '''        const response = await api("/api/git/status");
++        if (response.error) {
++            list.innerHTML = <div style='padding: 1rem; color: var(--danger-color);'></div>;
++            return;
++        }
++        const files = response.status?.files || [];'''
++
++new = '''        const response = await api("/api/git");
++        if (response.error && !response.is_repo) {
++            list.innerHTML = <div style='padding: 1rem; color: var(--danger-color);'>Git not connected</div>;
++            return;
++        }
++        const files = response.files || [];'''
++
++text = text.replace(old, new)
++path.write_text(text, 'utf-8')
++print("Patched app.js with /api/git")
+diff --git a/patch_app_changes3.py b/patch_app_changes3.py
+new file mode 100644
+index 0000000..9055d38
+--- /dev/null
++++ b/patch_app_changes3.py
+@@ -0,0 +1,16 @@
++import pathlib
++
++path = pathlib.Path('E:/llm_projects/agantic_ai/ollama_workspace_v4/web_ui/app.js')
++text = path.read_text('utf-8')
++
++new_logic = '''
++  refreshChangesBtn?.addEventListener("click", refreshSessionChanges);
++'''
++
++# We can append it to the init function or just at the end.
++if "refreshChangesBtn" not in text:
++    text += new_logic
++    path.write_text(text, 'utf-8')
++    print("Added event listener")
++else:
++    print("Already added")
+diff --git a/patch_app_fallback.py b/patch_app_fallback.py
+new file mode 100644
+index 0000000..29ee39f
+--- /dev/null
++++ b/patch_app_fallback.py
+@@ -0,0 +1,24 @@
++import pathlib
++
++path = pathlib.Path('E:/llm_projects/agantic_ai/ollama_workspace_v4/web_ui/app.js')
++text = path.read_text('utf-8')
++
++# 1. Update saveSettings()
++old_save = '''    const customApiModel = (modalCustomApiModel?.value?.trim() || customApiModel?.value?.trim() || state.data?.settings?.custom_api_model || "gpt-4o-mini");
++
++    const payload = {'''
++new_save = '''    const customApiModel = (modalCustomApiModel?.value?.trim() || customApiModel?.value?.trim() || state.data?.settings?.custom_api_model || "gpt-4o-mini");
++    const fallbackModel = (modalFallbackModel?.value?.trim() || state.data?.settings?.fallback_model || "");
++
++    const payload = {
++      fallback_model: fallbackModel,'''
++text = text.replace(old_save, new_save)
++
++# 2. Update initUI() where modalCustomApiModel is populated
++old_init = '''if (modalCustomApiModel) modalCustomApiModel.value = settings.custom_api_model || "gpt-4o-mini";'''
++new_init = '''if (modalCustomApiModel) modalCustomApiModel.value = settings.custom_api_model || "gpt-4o-mini";
++  if (modalFallbackModel) modalFallbackModel.value = settings.fallback_model || "";'''
++text = text.replace(old_init, new_init)
++
++path.write_text(text, 'utf-8')
++print("Added fallback to app.js")
+diff --git a/patch_compaction.py b/patch_compaction.py
+new file mode 100644
+index 0000000..7df48f8
+--- /dev/null
++++ b/patch_compaction.py
+@@ -0,0 +1,103 @@
++import pathlib
++
++path = pathlib.Path('E:/llm_projects/agantic_ai/ollama_workspace_v4/web_app.py')
++text = path.read_text('utf-8')
++
++old_compact = '''
++def _compact_memory_if_needed() -> None:
++    if not STATE.get("memory_enabled"):
++        return
++
++    messages = STATE["messages"]
++    target_count = max(MAX_KEPT_HISTORY_MESSAGES + 2, 18)
++    if len(messages) <= target_count:
++        return
++
++    keep_tail = MAX_KEPT_HISTORY_MESSAGES
++    to_summarize = messages[:-keep_tail]
++    tail = messages[-keep_tail:]
++    removed_assistants = sum(1 for message in to_summarize if message.get("role") == "assistant")
++    existing = STATE.get("memory_summary", "").strip()
++    lines = []
++    if existing:
++        lines.append(existing)
++    lines.append(f"\\n## Memory compacted at {time.strftime('%Y-%m-%d %H:%M:%S')}")
++    lines.extend(_message_summary_line(message) for message in to_summarize)
++    summary = "\\n".join(lines).strip()
++    STATE["memory_summary"] = _clip_for_context(summary, 12_000)
++    STATE["memory_summarized_count"] = int(STATE.get("memory_summarized_count", 0)) + len(to_summarize)
++    STATE["messages"] = tail
++    if removed_assistants:
++        STATE["tools_log"] = STATE["tools_log"][removed_assistants:]
++        STATE["used_skills_log"] = STATE["used_skills_log"][removed_assistants:]
++'''
++
++new_compact = '''
++def _compact_memory_if_needed() -> None:
++    if not STATE.get("memory_enabled"):
++        return
++
++    messages = STATE["messages"]
++    # Estimate total token/char usage
++    total_chars = sum(len(str(m.get("content", ""))) for m in messages)
++    
++    # We trigger auto-compaction if messages get too large OR if we exceed MAX_KEPT_HISTORY_MESSAGES by a large margin
++    char_limit = int(STATE.get("context_token_budget", DEFAULT_CONTEXT_TOKEN_BUDGET)) * 3 # roughly 3 chars per token threshold
++    
++    if len(messages) <= max(MAX_KEPT_HISTORY_MESSAGES + 2, 18) and total_chars < char_limit:
++        return
++
++    keep_tail = MAX_KEPT_HISTORY_MESSAGES
++    to_summarize = messages[:-keep_tail]
++    tail = messages[-keep_tail:]
++    removed_assistants = sum(1 for message in to_summarize if message.get("role") == "assistant")
++    existing = STATE.get("memory_summary", "").strip()
++    
++    print(f"Auto-compacting {len(to_summarize)} messages... (Total chars: {total_chars})")
++    
++    # Prepare LLM request for summarization
++    system_prompt = "You are a memory compaction module. Summarize the provided conversation history. Extract and retain ALL important technical details, file paths, code structures, user preferences, and unresolved plans. Be extremely concise but comprehensive."
++    user_prompt = "CONVERSATION HISTORY TO SUMMARIZE:\\n"
++    if existing:
++        user_prompt += f"\\n--- PREVIOUS SUMMARY ---\\n{existing}\\n"
++    user_prompt += "\\n--- NEW MESSAGES ---\\n"
++    for message in to_summarize:
++        role = message.get("role", "unknown")
++        content = _clip_for_context(message.get("content", ""), 2000) # Clip individual messages to avoid blowing up the summarization prompt
++        user_prompt += f"{role}: {content}\\n\\n"
++    
++    try:
++        # We temporarily disable tools for the summarizer
++        old_tools = STATE.get("active_tools", [])
++        # We don't need to change state tools if _call_model respects _active_tool_schemas, but we can't easily override it without a hack.
++        # So we'll just run _call_model and ignore tool calls.
++        summary_history = [
++            {"role": "system", "content": system_prompt},
++            {"role": "user", "content": user_prompt}
++        ]
++        response = _call_model(summary_history)
++        new_summary = response.get("content", "").strip()
++        if not new_summary:
++            raise Exception("LLM returned empty summary")
++            
++        summary = f"## Memory compacted at {time.strftime('%Y-%m-%d %H:%M:%S')}\\n{new_summary}"
++    except Exception as e:
++        print(f"LLM compaction failed: {e}. Falling back to basic clipping.")
++        lines = []
++        if existing:
++            lines.append(existing)
++        lines.append(f"\\n## Memory compacted at {time.strftime('%Y-%m-%d %H:%M:%S')}")
++        lines.extend(_message_summary_line(message) for message in to_summarize)
++        summary = "\\n".join(lines).strip()
++        
++    STATE["memory_summary"] = _clip_for_context(summary, 12_000)
++    STATE["memory_summarized_count"] = int(STATE.get("memory_summarized_count", 0)) + len(to_summarize)
++    STATE["messages"] = tail
++    if removed_assistants:
++        STATE["tools_log"] = STATE["tools_log"][removed_assistants:]
++        STATE["used_skills_log"] = STATE["used_skills_log"][removed_assistants:]
++'''
++
++text = text.replace(old_compact, new_compact)
++path.write_text(text, 'utf-8')
++print("Auto-compaction implemented in web_app.py.")
+diff --git a/patch_compaction_fix.py b/patch_compaction_fix.py
+new file mode 100644
+index 0000000..c431c51
+--- /dev/null
++++ b/patch_compaction_fix.py
+@@ -0,0 +1,41 @@
++import pathlib
++
++path = pathlib.Path('E:/llm_projects/agantic_ai/ollama_workspace_v4/web_app.py')
++text = path.read_text('utf-8')
++
++old_compact_try = '''    try:
++        # We temporarily disable tools for the summarizer
++        old_tools = STATE.get("active_tools", [])
++        # We don't need to change state tools if _call_model respects _active_tool_schemas, but we can't easily override it without a hack.
++        # So we'll just run _call_model and ignore tool calls.
++        summary_history = [
++            {"role": "system", "content": system_prompt},
++            {"role": "user", "content": user_prompt}
++        ]
++        response = _call_model(summary_history)'''
++
++new_compact_try = '''    try:
++        old_tools = STATE.get("active_tools", [])
++        STATE["active_tools"] = []
++        old_budget = STATE.get("response_token_budget", DEFAULT_RESPONSE_TOKEN_BUDGET)
++        STATE["response_token_budget"] = 1500  # limit summary length
++        
++        summary_history = [
++            {"role": "system", "content": system_prompt},
++            {"role": "user", "content": user_prompt}
++        ]
++        
++        # We need a way to notify the user if it's called inside a streaming context
++        # But since we don't have write_event here, we just let it take its time.
++        response = _call_model(summary_history)
++        
++        STATE["active_tools"] = old_tools
++        STATE["response_token_budget"] = old_budget
++'''
++
++if 'STATE["active_tools"] = []' not in text:
++    text = text.replace(old_compact_try, new_compact_try)
++    path.write_text(text, 'utf-8')
++    print("Fixed compaction bug")
++else:
++    print("Already fixed")
+diff --git a/patch_fallback_logic.py b/patch_fallback_logic.py
+new file mode 100644
+index 0000000..1371e9e
+--- /dev/null
++++ b/patch_fallback_logic.py
+@@ -0,0 +1,40 @@
++import pathlib
++
++path = pathlib.Path('E:/llm_projects/agantic_ai/ollama_workspace_v4/web_app.py')
++text = path.read_text('utf-8')
++
++old = '''            write_event({
++                "type": "status",
++                "message": f"Waiting for {_active_model_display()} ({iteration + 1}/{MAX_ITERATIONS}, timeout {REQUEST_TIMEOUT}s)...",
++            })
++            result = _call_model_stream(history, write_event)'''
++
++new = '''            write_event({
++                "type": "status",
++                "message": f"Waiting for {_active_model_display()} ({iteration + 1}/{MAX_ITERATIONS}, timeout {REQUEST_TIMEOUT}s)...",
++            })
++            
++            try:
++                result = _call_model_stream(history, write_event)
++            except Exception as e:
++                fallback = str(STATE.get("fallback_model", "")).strip()
++                if fallback and fallback != STATE.get("custom_api_model") and fallback != STATE.get("model"):
++                    write_event({"type": "status", "message": f"Primary model failed ({e}). Falling back to {fallback}..."})
++                    print(f"Model failed: {e}. Falling back to {fallback}")
++                    
++                    old_conn_mode = STATE["conn_mode"]
++                    old_custom = STATE.get("custom_api_model")
++                    
++                    STATE["conn_mode"] = MODE_CUSTOM
++                    STATE["custom_api_model"] = fallback
++                    try:
++                        result = _call_model_stream(history, write_event)
++                    finally:
++                        STATE["conn_mode"] = old_conn_mode
++                        STATE["custom_api_model"] = old_custom
++                else:
++                    raise'''
++
++text = text.replace(old, new)
++path.write_text(text, 'utf-8')
++print("Added fallback logic to web_app.py")
+diff --git a/patch_fallback_state.py b/patch_fallback_state.py
+new file mode 100644
+index 0000000..97108ee
+--- /dev/null
++++ b/patch_fallback_state.py
+@@ -0,0 +1,29 @@
++import pathlib
++
++path = pathlib.Path('E:/llm_projects/agantic_ai/ollama_workspace_v4/web_app.py')
++text = path.read_text('utf-8')
++
++old = '''    "custom_api_model": "gpt-4o-mini",'''
++new = '''    "custom_api_model": "gpt-4o-mini",
++    "fallback_model": "",'''
++text = text.replace(old, new)
++
++old_sync = '''            "custom_api_url", "custom_api_key", "custom_api_model", "memory_enabled",'''
++new_sync = '''            "custom_api_url", "custom_api_key", "custom_api_model", "fallback_model", "memory_enabled",'''
++text = text.replace(old_sync, new_sync)
++
++old_payload = '''            "custom_api_model": st["custom_api_model"],'''
++new_payload = '''            "custom_api_model": st["custom_api_model"],
++            "fallback_model": st.get("fallback_model", ""),'''
++text = text.replace(old_payload, new_payload)
++
++old_set = '''                if "custom_api_model" in data and str(data["custom_api_model"] or "").strip():
++                    STATE["custom_api_model"] = str(data["custom_api_model"]).strip()'''
++new_set = '''                if "custom_api_model" in data and str(data["custom_api_model"] or "").strip():
++                    STATE["custom_api_model"] = str(data["custom_api_model"]).strip()
++                if "fallback_model" in data:
++                    STATE["fallback_model"] = str(data["fallback_model"]).strip()'''
++text = text.replace(old_set, new_set)
++
++path.write_text(text, 'utf-8')
++print("Patched fallback state")
+diff --git a/patch_func.py b/patch_func.py
+new file mode 100644
+index 0000000..9e07b2a
+--- /dev/null
++++ b/patch_func.py
+@@ -0,0 +1,59 @@
++import pathlib
++
++path = pathlib.Path('E:/llm_projects/agantic_ai/ollama_workspace_v4/tools.py')
++text = path.read_text('utf-8')
++
++diagnostics_func = '''
++def tool_check_file_diagnostics(path: str) -> str:
++    try:
++        p = _safe_path(path)
++        if not p.exists():
++            return f"File does not exist: {path}"
++            
++        ext = p.suffix.lower()
++        if ext == '.py':
++            # 1. Native AST syntax check (super fast, catches syntax/indentation errors)
++            import ast
++            try:
++                ast.parse(p.read_text("utf-8"))
++            except SyntaxError as e:
++                return f"SyntaxError in {path} at line {e.lineno}, column {e.offset}: {e.msg}\\nLine: {e.text}"
++            except Exception as e:
++                return f"Parse Error: {e}"
++                
++            # 2. Try running flake8 or pylint if installed
++            import subprocess
++            try:
++                res = subprocess.run(["flake8", str(p)], capture_output=True, text=True, timeout=5)
++                if res.returncode != 0 and res.stdout:
++                    return f"Linting Warnings/Errors:\\n{res.stdout[:2000]}"
++            except FileNotFoundError:
++                pass # flake8 not installed
++                
++            return f"No syntax errors found in {path}. Code is syntactically valid."
++            
++        elif ext in ['.js', '.ts', '.jsx', '.tsx']:
++            import subprocess
++            try:
++                # Try node-based syntax check or eslint
++                res = subprocess.run(["node", "--check", str(p)], capture_output=True, text=True, timeout=5)
++                if res.returncode != 0:
++                    return f"Syntax Error:\\n{res.stderr[:2000]}"
++                return f"No syntax errors found in {path}."
++            except FileNotFoundError:
++                return "Node.js not installed, cannot verify JS/TS syntax."
++                
++        else:
++            return f"Diagnostics not supported natively for extension {ext}. Use tool_run_command with an appropriate linter/compiler."
++            
++    except Exception as e:
++        return f"Error running diagnostics: {e}"
++'''
++
++if "def tool_check_file_diagnostics" not in text:
++    text = text.replace('def tool_run_command(', diagnostics_func + '\ndef tool_run_command(')
++    path.write_text(text, 'utf-8')
++    print("Injected tool_check_file_diagnostics")
++else:
++    print("Function already exists")
++
+diff --git a/patch_handler.py b/patch_handler.py
+new file mode 100644
+index 0000000..f721275
+--- /dev/null
++++ b/patch_handler.py
+@@ -0,0 +1,15 @@
++import pathlib
++
++path = pathlib.Path('E:/llm_projects/agantic_ai/ollama_workspace_v4/tools.py')
++text = path.read_text('utf-8')
++
++old_run = '"run_command":  lambda a: tool_run_command(a["command"], a.get("timeout", 30)),'
++new_run = '"run_command":  lambda a: tool_run_command(a["command"], a.get("timeout", 30)),\n    "check_file_diagnostics": lambda a: tool_check_file_diagnostics(a["path"]),'
++
++if "check_file_diagnostics" not in text.split("run_command")[1]:
++    text = text.replace(old_run, new_run)
++    path.write_text(text, 'utf-8')
++    print("Injected into _HANDLERS")
++else:
++    print("Already in _HANDLERS")
++
+diff --git a/patch_html_changes.py b/patch_html_changes.py
+new file mode 100644
+index 0000000..e93ba50
+--- /dev/null
++++ b/patch_html_changes.py
+@@ -0,0 +1,28 @@
++import pathlib
++
++path = pathlib.Path('E:/llm_projects/agantic_ai/ollama_workspace_v4/web_ui/index.html')
++text = path.read_text('utf-8')
++
++old_tab = '''          <nav class="tabs workspace-tabs" aria-label="Workspace panel">
++            <button class="tab active" data-tab="files">Files</button>
++          </nav>'''
++new_tab = '''          <nav class="tabs workspace-tabs" aria-label="Workspace panel">
++            <button class="tab active" data-tab="files">Files</button>
++            <button class="tab" data-tab="changes">Changes</button>
++          </nav>'''
++
++old_section = '''          <section id="filesTab" class="tab-page active">'''
++new_section = '''          <section id="changesTab" class="tab-page" style="display:none;">
++            <div class="index-heading"><div><strong>Session Changes</strong><span>Files modified in this session</span></div></div>
++            <div id="sessionChangesList" class="file-list"></div>
++            <div style="padding: 1rem;">
++                <button id="refreshChangesBtn" class="ghost small-btn">Refresh Changes</button>
++            </div>
++          </section>
++
++          <section id="filesTab" class="tab-page active">'''
++
++text = text.replace(old_tab, new_tab)
++text = text.replace(old_section, new_section)
++path.write_text(text, 'utf-8')
++print("Added Changes tab to HTML")
+diff --git a/patch_launcher.py b/patch_launcher.py
+new file mode 100644
+index 0000000..d5db28e
+--- /dev/null
++++ b/patch_launcher.py
+@@ -0,0 +1,24 @@
++import pathlib
++
++path = pathlib.Path('E:/llm_projects/agantic_ai/ollama_workspace_v4/launcher.py')
++text = path.read_text('utf-8')
++
++new_imports = '''import os
++import socket
++import threading
++import webbrowser
++import sys'''
++
++new_main = '''def main() -> None:
++    if "--cli" in sys.argv:
++        import tui_app
++        tui_app.main()
++        return
++
++    os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")'''
++
++text = text.replace('import os\nimport socket\nimport threading\nimport webbrowser', new_imports)
++text = text.replace('def main() -> None:\n    os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")', new_main)
++
++path.write_text(text, 'utf-8')
++print("Added --cli to launcher")
+diff --git a/patch_notification.py b/patch_notification.py
+new file mode 100644
+index 0000000..60efcc7
+--- /dev/null
++++ b/patch_notification.py
+@@ -0,0 +1,18 @@
++import pathlib
++path = pathlib.Path('E:/llm_projects/agantic_ai/ollama_workspace_v4/web_app.py')
++text = path.read_text('utf-8')
++
++old = 'write_event({"type": "status", "message": "Preparing context..."})'
++new = '''write_event({"type": "status", "message": "Preparing context..."})
++    
++    # Check if memory compaction will be triggered
++    if STATE.get("memory_enabled") and len(STATE.get("messages", [])) > max(MAX_KEPT_HISTORY_MESSAGES + 2, 18):
++        write_event({"type": "status", "message": "Auto-compacting memory... (This may take a minute to summarize history)"})
++'''
++
++if 'Auto-compacting memory...' not in text:
++    text = text.replace(old, new)
++    path.write_text(text, 'utf-8')
++    print("Added UI notification for auto-compaction")
++else:
++    print("Already added UI notification")
+diff --git a/patch_payload.py b/patch_payload.py
+new file mode 100644
+index 0000000..5faa5df
+--- /dev/null
++++ b/patch_payload.py
+@@ -0,0 +1,24 @@
++import pathlib
++
++path = pathlib.Path('E:/llm_projects/agantic_ai/ollama_workspace_v4/web_app.py')
++text = path.read_text('utf-8')
++
++old = '''            "category": s.category,
++            "triggers": s.triggers or [],
++            "disabled": s.disable_model_invocation,
++        }
++        for s in sm.all()'''
++
++new = '''            "category": s.category,
++            "triggers": s.triggers or [],
++            "disabled": s.disable_model_invocation,
++            "content": s.content,
++        }
++        for s in sm.all()'''
++
++if '"content": s.content' not in text:
++    text = text.replace(old, new)
++    path.write_text(text, 'utf-8')
++    print("Added content to payload")
++else:
++    print("Already added")
+diff --git a/patch_replace.py b/patch_replace.py
+new file mode 100644
+index 0000000..4aa8be2
+--- /dev/null
++++ b/patch_replace.py
+@@ -0,0 +1,72 @@
++import pathlib
++
++path = pathlib.Path('E:/llm_projects/agantic_ai/ollama_workspace_v4/tools.py')
++text = path.read_text('utf-8')
++
++robust_code = '''
++def _fuzzy_replace(text: str, old: str, new: str, count: int) -> tuple[str, int]:
++    if old in text:
++        limit = -1 if int(count or 0) == 0 else int(count)
++        changed = text.count(old) if limit < 0 else min(text.count(old), limit)
++        return text.replace(old, new, limit), changed
++        
++    import re
++    tokens = old.split()
++    if not tokens:
++        return text, 0
++        
++    escaped_tokens = [re.escape(t) for t in tokens]
++    pattern_str = r'\\s+'.join(escaped_tokens)
++    
++    try:
++        pattern = re.compile(pattern_str)
++    except Exception:
++        return text, 0
++        
++    matches = list(pattern.finditer(text))
++    if len(matches) == 0:
++        return text, 0
++        
++    limit = len(matches) if int(count or 0) == 0 else int(count)
++    changed = min(len(matches), limit)
++    
++    res = text
++    # Replace from back to front to preserve indices
++    for match in reversed(matches[:changed]):
++        start, end = match.start(), match.end()
++        res = res[:start] + new + res[end:]
++        
++    return res, changed
++'''
++
++# We need to inject _fuzzy_replace into tools.py
++# and update tool_replace_in_file
++
++old_replace = '''
++        if regex:
++            updated, changed = re.subn(old, new, text, count=max(0, int(count or 0)))
++        else:
++            # count == 0 (the default) means "replace all matches". str.replace
++            # treats 0 as "replace nothing", so 0 must map to -1 for a real
++            # replace-all. A positive count caps the number of replacements.
++            limit = -1 if int(count or 0) == 0 else int(count)
++            changed = text.count(old) if limit < 0 else min(text.count(old), limit)
++            updated = text.replace(old, new, limit)
++'''
++
++new_replace = '''
++        if regex:
++            updated, changed = re.subn(old, new, text, count=max(0, int(count or 0)))
++        else:
++            updated, changed = _fuzzy_replace(text, old, new, int(count or 0))
++'''
++
++if "def _fuzzy_replace" not in text:
++    # insert before tool_replace_in_file
++    text = text.replace('def tool_replace_in_file(', robust_code + '\ndef tool_replace_in_file(')
++    text = text.replace(old_replace, new_replace)
++    path.write_text(text, 'utf-8')
++    print("Patched tool_replace_in_file with fuzzy replacement.")
++else:
++    print("Already patched.")
++
+diff --git a/patch_schema.py b/patch_schema.py
+new file mode 100644
+index 0000000..9c81aa5
+--- /dev/null
++++ b/patch_schema.py
+@@ -0,0 +1,29 @@
++import pathlib
++import json
++
++path = pathlib.Path('E:/llm_projects/agantic_ai/ollama_workspace_v4/tools.py')
++text = path.read_text('utf-8')
++
++diagnostics_schema = '''    {
++        "type": "function",
++        "function": {
++            "name": "check_file_diagnostics",
++            "description": "Check a file for syntax errors and warnings (LSP-like diagnostics). Always run this after editing a file to ensure your code is correct.",
++            "parameters": {
++                "type": "object",
++                "properties": {
++                    "path": {"type": "string", "description": "Path to the file to check"}
++                },
++                "required": ["path"]
++            }
++        }
++    },
++'''
++
++if "check_file_diagnostics" not in text:
++    text = text.replace('TOOL_SCHEMAS: list[dict] = [\n', 'TOOL_SCHEMAS: list[dict] = [\n' + diagnostics_schema)
++    path.write_text(text, 'utf-8')
++    print("Injected schema")
++else:
++    print("Schema already exists")
++
+diff --git a/patch_ui_fallback.py b/patch_ui_fallback.py
+new file mode 100644
+index 0000000..5b65847
+--- /dev/null
++++ b/patch_ui_fallback.py
+@@ -0,0 +1,28 @@
++import pathlib
++
++path = pathlib.Path('E:/llm_projects/agantic_ai/ollama_workspace_v4/web_ui/index.html')
++text = path.read_text('utf-8')
++
++old = '''          <label class="model-field-label">
++            <span>Available Ollama Models</span>
++            <div class="model-select-row">
++              <select id="modalOllamaModelSelect" class="model-select-input"></select>
++              <button id="refreshOllamaModels" type="button" class="icon-btn" aria-label="Refresh models" title="Refresh available models">?</button>
++            </div>
++          </label>'''
++
++new = '''          <label class="model-field-label">
++            <span>Available Ollama Models</span>
++            <div class="model-select-row">
++              <select id="modalOllamaModelSelect" class="model-select-input"></select>
++              <button id="refreshOllamaModels" type="button" class="icon-btn" aria-label="Refresh models" title="Refresh available models">?</button>
++            </div>
++          </label>
++          <label class="model-field-label">
++            <span>Fallback Model (LiteLLM Format)</span>
++            <input id="modalFallbackModel" class="model-text-input" placeholder="e.g. groq/llama3-8b-8192">
++          </label>'''
++
++text = text.replace(old, new)
++path.write_text(text, 'utf-8')
++print("Added fallback UI element")
+diff --git a/test.patch b/test.patch
+new file mode 100644
+index 0000000..6df9106
+--- /dev/null
++++ b/test.patch
+@@ -0,0 +1,8 @@
++diff --git a/test_robust.py b/test_robust.py
++--- a/test_robust.py
+++++ b/test_robust.py
++@@ -34,4 +34,4 @@
++ def hello():
++-    print("hi")
+++    print("hello world")
++     
+diff --git a/test_fuzzy.py b/test_fuzzy.py
+new file mode 100644
+index 0000000..5e7fac8
+--- /dev/null
++++ b/test_fuzzy.py
+@@ -0,0 +1,45 @@
++import re
++
++def fuzzy_replace(text: str, old: str, new: str) -> str:
++    if old in text:
++        return text.replace(old, new)
++        
++    tokens = old.split()
++    if not tokens:
++        return text
++        
++    escaped_tokens = [re.escape(t) for t in tokens]
++    pattern_str = r'\s+'.join(escaped_tokens)
++    
++    try:
++        pattern = re.compile(pattern_str)
++    except Exception:
++        return text
++        
++    matches = list(pattern.finditer(text))
++    
++    if len(matches) == 1:
++        match = matches[0]
++        start, end = match.start(), match.end()
++        res = text[:start] + new + text[end:]
++        return res
++        
++    return text
++
++text = '''def hello():
++    print("hi")
++    return True
++'''
++
++old = '''def hello():
++print("hi")
++return True'''
++
++new = '''def hello():
++    print("hello world")
++    return False'''
++
++res = fuzzy_replace(text, old, new)
++print("=== RESULT ===")
++print(res)
++
+diff --git a/test_git_patch.py b/test_git_patch.py
+new file mode 100644
+index 0000000..32de08e
+--- /dev/null
++++ b/test_git_patch.py
+@@ -0,0 +1,19 @@
++import subprocess
++import os
++
++patch = '''diff --git a/test_robust.py b/test_robust.py
++--- a/test_robust.py
+++++ b/test_robust.py
++@@ -34,4 +34,4 @@
++ def hello():
++-    print("hi")
+++    print("hello world")
++     
++'''
++with open("test.patch", "w") as f:
++    f.write(patch)
++
++res = subprocess.run(["git", "apply", "--allow-empty", "test.patch"], capture_output=True, text=True)
++print("Return:", res.returncode)
++print("Stdout:", res.stdout)
++print("Stderr:", res.stderr)
+diff --git a/test_robust.py b/test_robust.py
+new file mode 100644
+index 0000000..cda3a4b
+--- /dev/null
++++ b/test_robust.py
+@@ -0,0 +1,60 @@
++def robust_replace(text: str, old: str, new: str) -> str:
++    if old in text:
++        return text.replace(old, new)
++        
++    text_lines = text.splitlines(keepends=True)
++    old_lines = old.splitlines(keepends=True)
++    
++    def normalize(s: str) -> str:
++        return s.strip()
++        
++    old_norm = [normalize(l) for l in old_lines if normalize(l)]
++    if not old_norm:
++        return text
++        
++    text_norm = [normalize(l) for l in text_lines]
++    
++    for i in range(len(text_norm) - len(old_norm) + 1):
++        match = True
++        k = 0
++        j = i
++        while k < len(old_norm) and j < len(text_norm):
++            if not text_norm[j]:
++                j += 1
++                continue
++            if text_norm[j] != old_norm[k]:
++                match = False
++                break
++            j += 1
++            k += 1
++            
++        if match and k == len(old_norm):
++            res = "".join(text_lines[:i]) + new
++            if not new.endswith('\\n') and text_lines[j-1].endswith('\\n'):
++                res += '\\n'
++            res += "".join(text_lines[j:])
++            return res
++            
++    return text
++
++text = '''def hello():
++    print("hi")
++    
++    # some comment
++    return True
++'''
++
++old = '''def hello():
++print("hi")
++return True
++'''
++
++new = '''def hello():
++    print("hello world")
++    return False
++'''
++
++res = robust_replace(text, old, new)
++print("=== RESULT ===")
++print(res)
++
+diff --git a/tui_app.py b/tui_app.py
+new file mode 100644
+index 0000000..c199dfe
+--- /dev/null
++++ b/tui_app.py
+@@ -0,0 +1,80 @@
++import sys
++import argparse
++import time
++
++def main():
++    parser = argparse.ArgumentParser(description="CoderAI TUI Mode")
++    parser.add_argument("--cli", action="store_true", help="Run in CLI mode")
++    args = parser.parse_args()
++
++    if not args.cli:
++        print("Please run with --cli")
++        return
++
++    import web_app
++    from web_app import STATE, _build_final_system_prompt, _build_api_messages, _call_model, _handle_tool_call, _compact_memory_if_needed, _message_summary_line
++
++    print("=========================================")
++    print("        CoderAI CLI Mode (TUI)           ")
++    print("=========================================")
++    print("Welcome! Type your message to chat with the AI.")
++    print("Type /exit to quit.\n")
++
++    # Set up basic state
++    STATE["memory_session_id"] = "cli_session"
++    STATE["messages"] = []
++    STATE["active_tools"] = ["run_command", "check_file_diagnostics"] # Add more as needed
++    
++    # Load settings if needed or use defaults
++    STATE["temperature"] = 0.7
++    STATE["enable_thinking"] = False
++    
++    while True:
++        try:
++            user_input = input("\n[You] > ")
++            if user_input.strip().lower() in ["/exit", "exit", "quit"]:
++                break
++            if not user_input.strip():
++                continue
++            
++            # 1. Add user message
++            STATE["messages"].append({"role": "user", "content": user_input})
++            
++            # 2. Compact if needed
++            _compact_memory_if_needed()
++            
++            # 3. Build messages
++            final_system = _build_final_system_prompt()
++            history = _build_api_messages(final_system)
++            
++            print("\n[AI] > ", end="", flush=True)
++            
++            # 4. Call model (we'll just use synchronous call for simplicity in CLI prototype)
++            response = _call_model(history)
++            
++            content = response.get("content", "")
++            if content:
++                print(content)
++                
++            STATE["messages"].append({"role": "assistant", "content": content})
++            
++            tool_calls = response.get("tool_calls", [])
++            for call in tool_calls:
++                print(f"\n[AI Tool Call]: {call['name']}({call['arguments']})")
++                # A proper TUI would ask for approval here
++                try:
++                    result = _handle_tool_call(call)
++                    print(f"[Tool Result]:\n{result}")
++                    STATE["messages"].append({"role": "tool", "content": str(result), "name": call["name"], "tool_call_id": call.get("id", "")})
++                except Exception as e:
++                    print(f"[Tool Error]: {e}")
++                    STATE["messages"].append({"role": "tool", "content": str(e), "name": call["name"], "tool_call_id": call.get("id", "")})
++                    
++        except KeyboardInterrupt:
++            print("\nExiting...")
++            break
++        except Exception as e:
++            print(f"\nError: {e}")
++
++if __name__ == '__main__':
++    main()
+diff --git a/update_readme.py b/update_readme.py
+new file mode 100644
+index 0000000..18050c9
+--- /dev/null
++++ b/update_readme.py
+@@ -0,0 +1,22 @@
++import pathlib
++
++path = pathlib.Path('E:/llm_projects/agantic_ai/ollama_workspace_v4/README.md')
++text = path.read_text('utf-8')
++
++new_features = '''
++## OpenCode Integration Features
++
++CoderAI has been heavily upgraded to include key features inspired by OpenCode:
++
++1. **Terminal Command Execution (un_command)**: The agent can run arbitrary CLI commands, unit tests, and build scripts.
++2. **Robust Fuzzy File Replacement**: The eplace_in_file tool uses an advanced fuzzy-search algorithm to reliably replace code blocks even when the LLM makes indentation or whitespace errors.
++3. **Context Auto-Compaction**: When the conversation history grows too large, the LLM automatically summarizes the chat in the background, preventing context window exhaustion and "forgetting".
++4. **Native Diagnostics (Compiler Brain)**: After editing any Python file, the agent automatically runs an AST-based syntax checker (check_file_diagnostics) to catch and fix syntax errors instantly before answering the user.
++'''
++
++if "OpenCode Integration Features" not in text:
++    text = text.replace('## Plan Mode', new_features + '\n## Plan Mode')
++    path.write_text(text, 'utf-8')
++    print("Added features to README")
++else:
++    print("Already added to README")
+diff --git a/web_app.py b/web_app.py
+index 881bca1..0ba5f55 100644
+--- a/web_app.py
++++ b/web_app.py
+@@ -223,7 +223,7 @@ def _load_persisted_settings() -> None:
+             return
+         for key in (
+             "conn_mode", "temperature", "enable_thinking",
+-            "custom_api_url", "custom_api_key", "custom_api_model", "memory_enabled",
++            "custom_api_url", "custom_api_key", "custom_api_model", "fallback_model", "memory_enabled",
+             "context_token_budget", "response_token_budget", "auto_continue",
+             "tavily_enabled", "tavily_api_key", "git_approval_mode", "smart_skill_confirmation",
+             "sandbox_mode", "sandbox_docker_image",
+@@ -966,15 +966,23 @@ def _compact_memory_if_needed() -> None:
+         user_prompt += f"{role}: {content}\n\n"
+     
+     try:
+-        # We temporarily disable tools for the summarizer
+         old_tools = STATE.get("active_tools", [])
+-        # We don't need to change state tools if _call_model respects _active_tool_schemas, but we can't easily override it without a hack.
+-        # So we'll just run _call_model and ignore tool calls.
++        STATE["active_tools"] = []
++        old_budget = STATE.get("response_token_budget", DEFAULT_RESPONSE_TOKEN_BUDGET)
++        STATE["response_token_budget"] = 1500  # limit summary length
++        
+         summary_history = [
+             {"role": "system", "content": system_prompt},
+             {"role": "user", "content": user_prompt}
+         ]
++        
++        # We need a way to notify the user if it's called inside a streaming context
++        # But since we don't have write_event here, we just let it take its time.
+         response = _call_model(summary_history)
++        
++        STATE["active_tools"] = old_tools
++        STATE["response_token_budget"] = old_budget
++
+         new_summary = response.get("content", "").strip()
+         if not new_summary:
+             raise Exception("LLM returned empty summary")
+@@ -2094,6 +2102,11 @@ def _run_agent_stream(prompt: str, write_event, active_context: dict | None = No
+     if STATE.get("code_rag_type"):
+         write_event({"type": "code_rag_used", "query_type": STATE["code_rag_type"], "count": len(STATE["code_rag_hits"]), "chunks": STATE["code_rag_hits"]})
+     write_event({"type": "status", "message": "Preparing context..."})
++    
++    # Check if memory compaction will be triggered
++    if STATE.get("memory_enabled") and len(STATE.get("messages", [])) > max(MAX_KEPT_HISTORY_MESSAGES + 2, 18):
++        write_event({"type": "status", "message": "Auto-compacting memory... (This may take a minute to summarize history)"})
++
+ 
+     final_system = _build_final_system_prompt() + skill_injection + (f"\n\n{memory_context}" if memory_context else "")
+     history = _build_api_messages(final_system)
+@@ -2113,7 +2126,27 @@ def _run_agent_stream(prompt: str, write_event, active_context: dict | None = No
+                 "type": "status",
+                 "message": f"Waiting for {_active_model_display()} ({iteration + 1}/{MAX_ITERATIONS}, timeout {REQUEST_TIMEOUT}s)...",
+             })
+-            result = _call_model_stream(history, write_event)
++            
++            try:
++                result = _call_model_stream(history, write_event)
++            except Exception as e:
++                fallback = str(STATE.get("fallback_model", "")).strip()
++                if fallback and fallback != STATE.get("custom_api_model") and fallback != STATE.get("model"):
++                    write_event({"type": "status", "message": f"Primary model failed ({e}). Falling back to {fallback}..."})
++                    print(f"Model failed: {e}. Falling back to {fallback}")
++                    
++                    old_conn_mode = STATE["conn_mode"]
++                    old_custom = STATE.get("custom_api_model")
++                    
++                    STATE["conn_mode"] = MODE_CUSTOM
++                    STATE["custom_api_model"] = fallback
++                    try:
++                        result = _call_model_stream(history, write_event)
++                    finally:
++                        STATE["conn_mode"] = old_conn_mode
++                        STATE["custom_api_model"] = old_custom
++                else:
++                    raise
+             thinking_text += result.get("thinking", "") or ""
+ 
+             if is_execution_cancelled():
+@@ -2197,6 +2230,7 @@ def _skills_payload() -> list[dict]:
+             "category": s.category,
+             "triggers": s.triggers or [],
+             "disabled": s.disable_model_invocation,
++            "content": s.content,
+         }
+         for s in sm.all()
+     ]
+@@ -2250,6 +2284,7 @@ def _client_state(session_id: str | None = None) -> dict:
+             "model": _active_model(),
+             "ollama_model": st["model"],
+             "custom_api_model": st["custom_api_model"],
++            "fallback_model": st.get("fallback_model", ""),
+             "temperature": st["temperature"],
+             "enable_thinking": st["enable_thinking"],
+             "custom_api_url": st["custom_api_url"],
+@@ -2552,6 +2587,8 @@ class Handler(BaseHTTPRequestHandler):
+                     STATE["custom_api_key"] = str(data["custom_api_key"]).strip()
+                 if "custom_api_model" in data and str(data["custom_api_model"] or "").strip():
+                     STATE["custom_api_model"] = str(data["custom_api_model"]).strip()
++                if "fallback_model" in data:
++                    STATE["fallback_model"] = str(data["fallback_model"]).strip()
+ 
+                 is_custom = "custom" in str(STATE.get("conn_mode") or "").lower()
+                 if is_custom:
+diff --git a/web_ui/app.js b/web_ui/app.js
+index 0b018a3..ffe4b4f 100644
+--- a/web_ui/app.js
++++ b/web_ui/app.js
+@@ -2610,12 +2610,33 @@ $("promptInput").addEventListener("input", (e) => {
+   e.target.classList.toggle("rtl", isPersian);
+   e.target.classList.toggle("ltr", !isPersian);
+ });
+-$("chatForm").addEventListener("submit", async (event) => {
+-  event.preventDefault();
+-  const prompt = $("promptInput").value.trim();
+-  if (!prompt) return;
+-  $("promptInput").value = "";
+-  $("promptInput").setAttribute("dir", "auto");
++  $("chatForm").addEventListener("submit", async (event) => {
++    event.preventDefault();
++    let prompt = $("promptInput").value.trim();
++    if (!prompt) return;
++    
++    // Custom Named Arguments Implementation
++    const match = prompt.match(/^\/([a-zA-Z0-9_\-]+)/);
++    if (match) {
++        const skillName = match[1];
++        const skill = state.data?.skills?.find(s => s.name === skillName);
++        if (skill && skill.content) {
++            const placeholders = [...skill.content.matchAll(/\$([A-Z][A-Z0-9_]+)/g)];
++            const uniquePlaceholders = [...new Set(placeholders.map(m => m[1]))];
++            if (uniquePlaceholders.length > 0) {
++                let appendedArgs = "\n";
++                for (const p of uniquePlaceholders) {
++                    const answer = window.prompt(`Custom Command Argument needed:\n\nPlease enter value for $${p}:`, "");
++                    if (answer === null) return;
++                    appendedArgs += `\n$${p}: ${answer}`;
++                }
++                prompt += appendedArgs;
++            }
++        }
++    }
++    
++    $("promptInput").value = "";
++    $("promptInput").setAttribute("dir", "auto");
+   $("promptInput").classList.remove("rtl");
+   $("promptInput").classList.add("ltr");
+   updateTokenUsage();
+@@ -4086,3 +4107,5 @@ if (window.require) {
+         };
+     });
+ }
++
++  refreshChangesBtn?.addEventListener("click", refreshSessionChanges);
+
+commit 909ccd4232e337cb53e5d69a66de312013be6fa9
+Author: mohamadreza1368 <mohamadreza1368@users.noreply.github.com>
+Date:   Thu Sep 17 13:54:12 2026 +0330
+
+    docs: add OpenCode integration features to README
+
+diff --git a/README.md b/README.md
+index d6f49df..f0464da 100644
+--- a/README.md
++++ b/README.md
+@@ -266,6 +266,18 @@ Virtual environments and dependency directories are pruned before traversal. Fol
+ 
+ The Windows portable executable includes the built-in Ollama HTTP runtime, SQLite/FTS5 indexing, project dependency graphs, persistent memory, Git integration, and the complete web UI. Optional Python integrations are used when bundled in a build; otherwise the application falls back to its built-in runtime and SQLite retrieval. Ollama itself remains a separate local application and must be running when Local Ollama mode is selected.
+ 
++
++## OpenCode Integration Features
++
++CoderAI has been heavily upgraded to include key features inspired by OpenCode:
++
++1. **Terminal Command Execution (
++un_command)**: The agent can run arbitrary CLI commands, unit tests, and build scripts.
++2. **Robust Fuzzy File Replacement**: The 
++eplace_in_file tool uses an advanced fuzzy-search algorithm to reliably replace code blocks even when the LLM makes indentation or whitespace errors.
++3. **Context Auto-Compaction**: When the conversation history grows too large, the LLM automatically summarizes the chat in the background, preventing context window exhaustion and "forgetting".
++4. **Native Diagnostics (Compiler Brain)**: After editing any Python file, the agent automatically runs an AST-based syntax checker (check_file_diagnostics) to catch and fix syntax errors instantly before answering the user.
++
+ ## Plan Mode
+ 
+ Plan Mode lets the agent **explore the codebase read-only, propose a set of
+
+commit e8fcddf64e04061e1de13a56edfcae0533065541
+Author: mohamadreza1368 <mohamadreza1368@users.noreply.github.com>
+Date:   Thu Sep 17 12:37:39 2026 +0330
+
+    feat: phase 4 - implement check_file_diagnostics for native LSP-like syntax checking
+
+diff --git a/system_prompts/custom_prompt.md b/system_prompts/custom_prompt.md
+index 30c73be..a71e37e 100644
+--- a/system_prompts/custom_prompt.md
++++ b/system_prompts/custom_prompt.md
+@@ -3,11 +3,12 @@ You have access to a set of native tools for interacting with the codebase.
+ Your goal is to fulfill the user's request efficiently.
+ 
+ # CRITICAL RULES
+-1. TO MODIFY CODE, YOU MUST USE THE TOOLS. Do NOT simply write the modified code in a markdown block in your response. You MUST use the eplace_in_file, write_file, or pply_patch tools to apply the changes directly to the files in the workspace.
++1. TO MODIFY CODE, YOU MUST USE THE TOOLS. Do NOT simply write the modified code in a markdown block in your response. You MUST use the eplace_in_file, write_file, or ppend_file tools to apply the changes directly to the files in the workspace.
+ 2. DO NOT just write the name of the tool in markdown (e.g. scan_project). You MUST use the actual function calling feature of the API to execute the tool!
+ 3. To understand the project structure, use scan_project, get_project_overview, or search_codebase before making any changes.
+-4. To check Git status or commit changes, use git_status, git_diff, and git_commit via function calling. Do NOT just output git commands.
++4. To check Git status or commit changes, use git_status, git_diff, and git_commit via function calling.
+ 5. You can execute shell commands, run unit tests, or compile code using the un_command tool. Use this to verify your code changes actually work!
++6. **DIAGNOSTICS & LSP:** After modifying any file (e.g. via eplace_in_file or write_file), you MUST immediately call the check_file_diagnostics tool on that file. This acts as your Language Server. If it returns syntax errors or linter warnings, you MUST fix them before finishing your turn!
+ 
+ # Communication Style
+ 1. Be precise and helpful.
+diff --git a/tools.py b/tools.py
+index ecdf536..fb54739 100644
+--- a/tools.py
++++ b/tools.py
+@@ -430,6 +430,20 @@ def tavily_configured() -> bool:
+ # ══════════════════════════════════════════════════════════════════════════════
+ 
+ TOOL_SCHEMAS: list[dict] = [
++    {
++        "type": "function",
++        "function": {
++            "name": "check_file_diagnostics",
++            "description": "Check a file for syntax errors and warnings (LSP-like diagnostics). Always run this after editing a file to ensure your code is correct.",
++            "parameters": {
++                "type": "object",
++                "properties": {
++                    "path": {"type": "string", "description": "Path to the file to check"}
++                },
++                "required": ["path"]
++            }
++        }
++    },
+     {
+         "type": "function",
+         "function": {
+@@ -1261,6 +1275,52 @@ def tool_write_file(path: str, content: str) -> str:
+ 
+ 
+ 
++
++def tool_check_file_diagnostics(path: str) -> str:
++    try:
++        p = _safe_path(path)
++        if not p.exists():
++            return f"File does not exist: {path}"
++            
++        ext = p.suffix.lower()
++        if ext == '.py':
++            # 1. Native AST syntax check (super fast, catches syntax/indentation errors)
++            import ast
++            try:
++                ast.parse(p.read_text("utf-8"))
++            except SyntaxError as e:
++                return f"SyntaxError in {path} at line {e.lineno}, column {e.offset}: {e.msg}\nLine: {e.text}"
++            except Exception as e:
++                return f"Parse Error: {e}"
++                
++            # 2. Try running flake8 or pylint if installed
++            import subprocess
++            try:
++                res = subprocess.run(["flake8", str(p)], capture_output=True, text=True, timeout=5)
++                if res.returncode != 0 and res.stdout:
++                    return f"Linting Warnings/Errors:\n{res.stdout[:2000]}"
++            except FileNotFoundError:
++                pass # flake8 not installed
++                
++            return f"No syntax errors found in {path}. Code is syntactically valid."
++            
++        elif ext in ['.js', '.ts', '.jsx', '.tsx']:
++            import subprocess
++            try:
++                # Try node-based syntax check or eslint
++                res = subprocess.run(["node", "--check", str(p)], capture_output=True, text=True, timeout=5)
++                if res.returncode != 0:
++                    return f"Syntax Error:\n{res.stderr[:2000]}"
++                return f"No syntax errors found in {path}."
++            except FileNotFoundError:
++                return "Node.js not installed, cannot verify JS/TS syntax."
++                
++        else:
++            return f"Diagnostics not supported natively for extension {ext}. Use tool_run_command with an appropriate linter/compiler."
++            
++    except Exception as e:
++        return f"Error running diagnostics: {e}"
++
+ def tool_run_command(command: str, timeout: int = 30) -> str:
+     import subprocess
+     try:
+@@ -2120,6 +2180,7 @@ _HANDLERS: dict = {
+     "read_file":    lambda a: tool_read_file(a["path"], a.get("start_line"), a.get("end_line"), a.get("mode", "raw")),
+     "write_file":   lambda a: tool_write_file(a["path"], a["content"]),
+     "run_command":  lambda a: tool_run_command(a["command"], a.get("timeout", 30)),
++    "check_file_diagnostics": lambda a: tool_check_file_diagnostics(a["path"]),
+     "list_files":   lambda a: tool_list_files(a.get("pattern", "**/*")),
+     "run_bash":     lambda a: tool_run_bash(a["command"]),
+     "run_python":   lambda a: tool_run_python(a["code"]),

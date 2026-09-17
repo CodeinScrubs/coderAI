@@ -1941,6 +1941,7 @@ async function saveSettings() {
     sandbox_docker_image: $("sandboxDockerImage") ? $("sandboxDockerImage").value.trim() : "python:3.11-slim",
     custom_api_url: apiUrl,
     custom_api_model: customApiModel,
+      fallback_model: modalFallbackModel?.value?.trim(),
   };
   if (apiKey) {
     payload.custom_api_key = apiKey;
