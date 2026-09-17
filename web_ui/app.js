@@ -2610,12 +2610,33 @@ $("promptInput").addEventListener("input", (e) => {
   e.target.classList.toggle("rtl", isPersian);
   e.target.classList.toggle("ltr", !isPersian);
 });
-$("chatForm").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const prompt = $("promptInput").value.trim();
-  if (!prompt) return;
-  $("promptInput").value = "";
-  $("promptInput").setAttribute("dir", "auto");
+  $("chatForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    let prompt = $("promptInput").value.trim();
+    if (!prompt) return;
+    
+    // Custom Named Arguments Implementation
+    const match = prompt.match(/^\/([a-zA-Z0-9_\-]+)/);
+    if (match) {
+        const skillName = match[1];
+        const skill = state.data?.skills?.find(s => s.name === skillName);
+        if (skill && skill.content) {
+            const placeholders = [...skill.content.matchAll(/\$([A-Z][A-Z0-9_]+)/g)];
+            const uniquePlaceholders = [...new Set(placeholders.map(m => m[1]))];
+            if (uniquePlaceholders.length > 0) {
+                let appendedArgs = "\n";
+                for (const p of uniquePlaceholders) {
+                    const answer = window.prompt(`Custom Command Argument needed:\n\nPlease enter value for $${p}:`, "");
+                    if (answer === null) return;
+                    appendedArgs += `\n$${p}: ${answer}`;
+                }
+                prompt += appendedArgs;
+            }
+        }
+    }
+    
+    $("promptInput").value = "";
+    $("promptInput").setAttribute("dir", "auto");
   $("promptInput").classList.remove("rtl");
   $("promptInput").classList.add("ltr");
   updateTokenUsage();
@@ -4086,3 +4107,5 @@ if (window.require) {
         };
     });
 }
+
+  refreshChangesBtn?.addEventListener("click", refreshSessionChanges);

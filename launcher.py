@@ -4,6 +4,7 @@ import os
 import socket
 import threading
 import webbrowser
+import sys
 
 
 def _find_free_port(start: int = 7864, attempts: int = 20) -> int:
@@ -16,6 +17,11 @@ def _find_free_port(start: int = 7864, attempts: int = 20) -> int:
 
 
 def main() -> None:
+    if "--cli" in sys.argv:
+        import tui_app
+        tui_app.main()
+        return
+
     os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
     os.environ.setdefault("LITELLM_LOG", "ERROR")
     os.environ.setdefault("AGENT_REQUEST_TIMEOUT", "1800")

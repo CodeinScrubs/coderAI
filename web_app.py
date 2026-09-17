@@ -223,7 +223,7 @@ def _load_persisted_settings() -> None:
             return
         for key in (
             "conn_mode", "temperature", "enable_thinking",
-            "custom_api_url", "custom_api_key", "custom_api_model", "memory_enabled",
+            "custom_api_url", "custom_api_key", "custom_api_model", "fallback_model", "memory_enabled",
             "context_token_budget", "response_token_budget", "auto_continue",
             "tavily_enabled", "tavily_api_key", "git_approval_mode", "smart_skill_confirmation",
             "sandbox_mode", "sandbox_docker_image",
@@ -966,15 +966,23 @@ def _compact_memory_if_needed() -> None:
         user_prompt += f"{role}: {content}\n\n"
     
     try:
-        # We temporarily disable tools for the summarizer
         old_tools = STATE.get("active_tools", [])
-        # We don't need to change state tools if _call_model respects _active_tool_schemas, but we can't easily override it without a hack.
-        # So we'll just run _call_model and ignore tool calls.
+        STATE["active_tools"] = []
+        old_budget = STATE.get("response_token_budget", DEFAULT_RESPONSE_TOKEN_BUDGET)
+        STATE["response_token_budget"] = 1500  # limit summary length
+        
         summary_history = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ]
+        
+        # We need a way to notify the user if it's called inside a streaming context
+        # But since we don't have write_event here, we just let it take its time.
         response = _call_model(summary_history)
+        
+        STATE["active_tools"] = old_tools
+        STATE["response_token_budget"] = old_budget
+
         new_summary = response.get("content", "").strip()
         if not new_summary:
             raise Exception("LLM returned empty summary")
@@ -2094,6 +2102,11 @@ def _run_agent_stream(prompt: str, write_event, active_context: dict | None = No
     if STATE.get("code_rag_type"):
         write_event({"type": "code_rag_used", "query_type": STATE["code_rag_type"], "count": len(STATE["code_rag_hits"]), "chunks": STATE["code_rag_hits"]})
     write_event({"type": "status", "message": "Preparing context..."})
+    
+    # Check if memory compaction will be triggered
+    if STATE.get("memory_enabled") and len(STATE.get("messages", [])) > max(MAX_KEPT_HISTORY_MESSAGES + 2, 18):
+        write_event({"type": "status", "message": "Auto-compacting memory... (This may take a minute to summarize history)"})
+
 
     final_system = _build_final_system_prompt() + skill_injection + (f"\n\n{memory_context}" if memory_context else "")
     history = _build_api_messages(final_system)
@@ -2113,7 +2126,27 @@ def _run_agent_stream(prompt: str, write_event, active_context: dict | None = No
                 "type": "status",
                 "message": f"Waiting for {_active_model_display()} ({iteration + 1}/{MAX_ITERATIONS}, timeout {REQUEST_TIMEOUT}s)...",
             })
-            result = _call_model_stream(history, write_event)
+            
+            try:
+                result = _call_model_stream(history, write_event)
+            except Exception as e:
+                fallback = str(STATE.get("fallback_model", "")).strip()
+                if fallback and fallback != STATE.get("custom_api_model") and fallback != STATE.get("model"):
+                    write_event({"type": "status", "message": f"Primary model failed ({e}). Falling back to {fallback}..."})
+                    print(f"Model failed: {e}. Falling back to {fallback}")
+                    
+                    old_conn_mode = STATE["conn_mode"]
+                    old_custom = STATE.get("custom_api_model")
+                    
+                    STATE["conn_mode"] = MODE_CUSTOM
+                    STATE["custom_api_model"] = fallback
+                    try:
+                        result = _call_model_stream(history, write_event)
+                    finally:
+                        STATE["conn_mode"] = old_conn_mode
+                        STATE["custom_api_model"] = old_custom
+                else:
+                    raise
             thinking_text += result.get("thinking", "") or ""
 
             if is_execution_cancelled():
@@ -2197,6 +2230,7 @@ def _skills_payload() -> list[dict]:
             "category": s.category,
             "triggers": s.triggers or [],
             "disabled": s.disable_model_invocation,
+            "content": s.content,
         }
         for s in sm.all()
     ]
@@ -2250,6 +2284,7 @@ def _client_state(session_id: str | None = None) -> dict:
             "model": _active_model(),
             "ollama_model": st["model"],
             "custom_api_model": st["custom_api_model"],
+            "fallback_model": st.get("fallback_model", ""),
             "temperature": st["temperature"],
             "enable_thinking": st["enable_thinking"],
             "custom_api_url": st["custom_api_url"],
@@ -2552,6 +2587,8 @@ class Handler(BaseHTTPRequestHandler):
                     STATE["custom_api_key"] = str(data["custom_api_key"]).strip()
                 if "custom_api_model" in data and str(data["custom_api_model"] or "").strip():
                     STATE["custom_api_model"] = str(data["custom_api_model"]).strip()
+                if "fallback_model" in data:
+                    STATE["fallback_model"] = str(data["fallback_model"]).strip()
 
                 is_custom = "custom" in str(STATE.get("conn_mode") or "").lower()
                 if is_custom:
