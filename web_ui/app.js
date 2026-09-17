@@ -1555,17 +1555,28 @@ function renderMessages() {
   $("messages").innerHTML = messages.map((msg, index) => {
     const assistantIndex = messages.slice(0, index + 1).filter((m) => m.role === "assistant").length - 1;
     const tools = msg.role === "assistant" && toolsLog[assistantIndex] ? toolsLog[assistantIndex] : [];
-    const toolHtml = tools.length ? `<div class="tool-box">${escapeHtml(tools.map((t) =>
-      `${t.name}(${JSON.stringify(t.args || {})})\n${String(t.result || "").slice(0, 1200)}`
-    ).join("\n\n"))}</div>` : "";
+    const toolHtml = tools.length ? `<div class="chat-tools">${tools.map((t) => {
+      let summary = t.name;
+      if (t.name === 'run_bash' || t.name === 'run_command') {
+          const cmd = t.args.command || '';
+          summary = 'Run command: ' + (cmd.length > 50 ? cmd.slice(0, 50) + '...' : cmd);
+      } else if (t.name === 'write_file' || t.name === 'write_to_file' || t.name === 'replace_in_file') {
+          summary = 'Edit ' + (t.args.file_path || t.args.path || 'file');
+      } else if (t.name === 'search_codebase' && t.args.query) {
+          summary = 'Search: ' + t.args.query;
+      }
+      const rawJsonArgs = JSON.stringify(t.args || {}, null, 2);
+      const resultString = String(t.result || "").slice(0, 1500) + (String(t.result || "").length > 1500 ? "\\n... [Truncated]" : "");
+      return `<details class="antigravity-tool"><summary>${escapeHtml(summary)} &gt;</summary><pre><code>Arguments:\n${escapeHtml(rawJsonArgs)}\n\nResult:\n${escapeHtml(resultString)}</code></pre></details>`;
+    }).join("")}</div>` : "";
     const isMsgRTL = isRTL(msg.content);
     const dirAttr = isMsgRTL ? "rtl" : "ltr";
     const roleLabel = msg.role === "user" ? "You" : "Coder AI";
     return `
       <article class="message ${msg.role} ${dirAttr}" dir="${dirAttr}">
         <div class="message-meta"><span class="role">${roleLabel}</span></div>
-        <div class="message-text">${renderMessageContent(msg)}</div>
         ${toolHtml}
+        <div class="message-text">${renderMessageContent(msg)}</div>
       </article>
     `;
   }).join("");
@@ -1703,10 +1714,32 @@ function appendStreamingAssistant() {
 }
 
 function appendToolStatus(name, text) {
-  const article = document.createElement("article");
-  article.className = "message assistant";
-  article.innerHTML = `<div class="message-meta"><span class="role">System Action</span></div><div class="tool-box">${escapeHtml(`${name}\n${text}`)}</div>`;
-  $("messages").appendChild(article);
+  let summary = name;
+  if (name === 'run_command' || name === 'run_bash') summary = 'Running command...';
+  else if (name === 'replace_in_file' || name === 'write_file') summary = 'Editing file...';
+  
+  // We insert a live streaming tool report above the text message so RTL isn't broken
+  const streamingArticle = document.querySelector(".message.assistant.streaming");
+  const streamTarget = streamingArticle ? streamingArticle.querySelector(".message-text") : null;
+  const toolsDiv = (streamingArticle && streamingArticle.querySelector(".chat-tools")) || (() => {
+      if (!streamTarget) {
+          const article = document.createElement("article");
+          article.className = "message assistant ltr";
+          article.innerHTML = `<div class="message-meta"><span class="role">System Action</span></div><div class="chat-tools"></div>`;
+          $("messages").appendChild(article);
+          return article.querySelector(".chat-tools");
+      }
+      const d = document.createElement("div");
+      d.className = "chat-tools";
+      streamTarget.parentNode.insertBefore(d, streamTarget);
+      return d;
+  })();
+  
+  const entry = document.createElement("details");
+  entry.className = "antigravity-tool";
+  entry.open = true; // Streaming tools default open so you can read them
+  entry.innerHTML = `<summary>${escapeHtml(summary)} &gt;</summary><pre><code>${escapeHtml(text)}</code></pre>`;
+  toolsDiv.appendChild(entry);
   $("messages").scrollTop = $("messages").scrollHeight;
 }
 
