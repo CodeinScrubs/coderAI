@@ -433,6 +433,27 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "run_command",
+            "description": "Execute a shell command (e.g., npm test, python -m unittest, etc.) in the workspace to verify code changes.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The bash/shell command to execute"
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Timeout in seconds (default 30, max 120)"
+                    }
+                },
+                "required": ["command"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "check_file_diagnostics",
             "description": "Check a file for syntax errors and warnings (LSP-like diagnostics). Always run this after editing a file to ensure your code is correct.",
             "parameters": {
