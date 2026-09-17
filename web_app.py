@@ -1529,6 +1529,8 @@ def _use_langchain_runtime() -> bool:
 
 
 def _use_langchain_streaming_runtime() -> bool:
+    if "custom" in str(STATE.get("conn_mode", "")).lower():
+        return True
     return os.getenv("AGENT_USE_LANGCHAIN_STREAMING", "false").lower() in {"1", "true", "yes"}
 
 
@@ -1691,6 +1693,8 @@ def _call_model_stream(history: list[dict], write_event) -> dict:
             break
         choices = event.get("choices", []) if isinstance(event, dict) else []
         if not choices:
+            if isinstance(event, dict) and "error" in event:
+                raise ValueError(f"API Error: {event['error']}")
             continue
         finish_reason = choices[0].get("finish_reason") or finish_reason
         delta = choices[0].get("delta", {}) or {}
