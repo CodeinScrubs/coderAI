@@ -1260,6 +1260,58 @@ def tool_write_file(path: str, content: str) -> str:
         return f"Error: {e}"
 
 
+
+def tool_run_command(command: str, timeout: int = 30) -> str:
+    import subprocess
+    try:
+        ws = get_workspace()
+        timeout = max(5, min(int(timeout or 30), 120))
+        
+        arguments = {"command": command, "timeout": timeout}
+        _gate_approval("run_command", arguments, f"Execute command in {ws}:\n{command}", "diff")
+        
+        # Check if the command is destructive (re-using _is_destructive_command from tools.py)
+        is_dangerous, reason = _is_destructive_command(command)
+        if is_dangerous:
+            return f"Error: Command rejected for safety reasons: {reason}"
+        
+        creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        
+        result = subprocess.run(
+            command,
+            shell=True,
+            cwd=str(ws),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            creationflags=creationflags
+        )
+        
+        output = result.stdout
+        if result.stderr:
+            output += "\n[STDERR]:\n" + result.stderr
+            
+        if not output.strip():
+            output = "Command executed successfully with no output."
+            
+        if result.returncode != 0:
+            output = f"Command exited with code {result.returncode}\n{output}"
+            
+        # truncate if too long
+        if len(output) > 8000:
+            output = output[:8000] + "\n... [truncated]"
+            
+        return output
+    except subprocess.TimeoutExpired:
+        return f"Error: Command timed out after {timeout} seconds."
+    except ToolApprovalRequired:
+        raise
+    except Exception as e:
+        return f"Error executing command: {e}"
+
+
 def tool_list_files(pattern: str = "**/*") -> str:
     try:
         ws = get_workspace()
@@ -1525,6 +1577,41 @@ def tool_read_many_files(paths: list[str], max_chars_each: int = 6000) -> str:
     return "".join(chunks).strip() or "No files were provided."
 
 
+
+def _fuzzy_replace(text: str, old: str, new: str, count: int) -> tuple[str, int]:
+    if old in text:
+        limit = -1 if int(count or 0) == 0 else int(count)
+        changed = text.count(old) if limit < 0 else min(text.count(old), limit)
+        return text.replace(old, new, limit), changed
+        
+    import re
+    tokens = old.split()
+    if not tokens:
+        return text, 0
+        
+    escaped_tokens = [re.escape(t) for t in tokens]
+    pattern_str = r'\s+'.join(escaped_tokens)
+    
+    try:
+        pattern = re.compile(pattern_str)
+    except Exception:
+        return text, 0
+        
+    matches = list(pattern.finditer(text))
+    if len(matches) == 0:
+        return text, 0
+        
+    limit = len(matches) if int(count or 0) == 0 else int(count)
+    changed = min(len(matches), limit)
+    
+    res = text
+    # Replace from back to front to preserve indices
+    for match in reversed(matches[:changed]):
+        start, end = match.start(), match.end()
+        res = res[:start] + new + res[end:]
+        
+    return res, changed
+
 def tool_replace_in_file(path: str, old: str, new: str, regex: bool = False, count: int = 0) -> str:
     try:
         p = _safe_path(path)
@@ -1534,12 +1621,7 @@ def tool_replace_in_file(path: str, old: str, new: str, regex: bool = False, cou
         if regex:
             updated, changed = re.subn(old, new, text, count=max(0, int(count or 0)))
         else:
-            # count == 0 (the default) means "replace all matches". str.replace
-            # treats 0 as "replace nothing", so 0 must map to -1 for a real
-            # replace-all. A positive count caps the number of replacements.
-            limit = -1 if int(count or 0) == 0 else int(count)
-            changed = text.count(old) if limit < 0 else min(text.count(old), limit)
-            updated = text.replace(old, new, limit)
+            updated, changed = _fuzzy_replace(text, old, new, int(count or 0))
         if updated == text:
             return f"No replacements were made: {path}"
         ws = get_workspace()
@@ -2037,6 +2119,7 @@ def _guarded_sql_schema(arguments: dict) -> str:
 _HANDLERS: dict = {
     "read_file":    lambda a: tool_read_file(a["path"], a.get("start_line"), a.get("end_line"), a.get("mode", "raw")),
     "write_file":   lambda a: tool_write_file(a["path"], a["content"]),
+    "run_command":  lambda a: tool_run_command(a["command"], a.get("timeout", 30)),
     "list_files":   lambda a: tool_list_files(a.get("pattern", "**/*")),
     "run_bash":     lambda a: tool_run_bash(a["command"]),
     "run_python":   lambda a: tool_run_python(a["code"]),
