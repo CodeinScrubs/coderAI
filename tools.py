@@ -433,6 +433,20 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "check_file_diagnostics",
+            "description": "Check a file for syntax errors and warnings (LSP-like diagnostics). Always run this after editing a file to ensure your code is correct.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the file to check"}
+                },
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_database_schema",
             "description": "Read the schema structure of a SQL database.",
             "parameters": {
@@ -1260,6 +1274,52 @@ def tool_write_file(path: str, content: str) -> str:
         return f"Error: {e}"
 
 
+
+
+def tool_check_file_diagnostics(path: str) -> str:
+    try:
+        p = _safe_path(path)
+        if not p.exists():
+            return f"File does not exist: {path}"
+            
+        ext = p.suffix.lower()
+        if ext == '.py':
+            # 1. Native AST syntax check (super fast, catches syntax/indentation errors)
+            import ast
+            try:
+                ast.parse(p.read_text("utf-8"))
+            except SyntaxError as e:
+                return f"SyntaxError in {path} at line {e.lineno}, column {e.offset}: {e.msg}\nLine: {e.text}"
+            except Exception as e:
+                return f"Parse Error: {e}"
+                
+            # 2. Try running flake8 or pylint if installed
+            import subprocess
+            try:
+                res = subprocess.run(["flake8", str(p)], capture_output=True, text=True, timeout=5)
+                if res.returncode != 0 and res.stdout:
+                    return f"Linting Warnings/Errors:\n{res.stdout[:2000]}"
+            except FileNotFoundError:
+                pass # flake8 not installed
+                
+            return f"No syntax errors found in {path}. Code is syntactically valid."
+            
+        elif ext in ['.js', '.ts', '.jsx', '.tsx']:
+            import subprocess
+            try:
+                # Try node-based syntax check or eslint
+                res = subprocess.run(["node", "--check", str(p)], capture_output=True, text=True, timeout=5)
+                if res.returncode != 0:
+                    return f"Syntax Error:\n{res.stderr[:2000]}"
+                return f"No syntax errors found in {path}."
+            except FileNotFoundError:
+                return "Node.js not installed, cannot verify JS/TS syntax."
+                
+        else:
+            return f"Diagnostics not supported natively for extension {ext}. Use tool_run_command with an appropriate linter/compiler."
+            
+    except Exception as e:
+        return f"Error running diagnostics: {e}"
 
 def tool_run_command(command: str, timeout: int = 30) -> str:
     import subprocess
@@ -2120,6 +2180,7 @@ _HANDLERS: dict = {
     "read_file":    lambda a: tool_read_file(a["path"], a.get("start_line"), a.get("end_line"), a.get("mode", "raw")),
     "write_file":   lambda a: tool_write_file(a["path"], a["content"]),
     "run_command":  lambda a: tool_run_command(a["command"], a.get("timeout", 30)),
+    "check_file_diagnostics": lambda a: tool_check_file_diagnostics(a["path"]),
     "list_files":   lambda a: tool_list_files(a.get("pattern", "**/*")),
     "run_bash":     lambda a: tool_run_bash(a["command"]),
     "run_python":   lambda a: tool_run_python(a["code"]),
