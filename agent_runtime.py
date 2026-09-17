@@ -110,6 +110,8 @@ class LangChainRuntime:
 
             api_key = settings.custom_api_key or "not-needed"
             base_url = settings.custom_api_url.rstrip("/") if settings.custom_api_url else "https://api.openai.com/v1"
+            if base_url.endswith("/chat/completions"):
+                base_url = base_url[:-17]
 
             return ChatOpenAI(
                 model=settings.model,
