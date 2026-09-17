@@ -941,7 +941,12 @@ def _compact_memory_if_needed() -> None:
     total_chars = sum(len(str(m.get("content", ""))) for m in messages)
     
     # We trigger auto-compaction if messages get too large OR if we exceed MAX_KEPT_HISTORY_MESSAGES by a large margin
-    char_limit = int(STATE.get("context_token_budget", DEFAULT_CONTEXT_TOKEN_BUDGET)) * 3 # roughly 3 chars per token threshold
+    context_window, _ = _model_context_window(_active_model())
+    if not context_window or context_window < 4000:
+        context_window = int(STATE.get("context_token_budget", DEFAULT_CONTEXT_TOKEN_BUDGET))
+        
+    # Auto-compact at 80% capacity (assuming roughly 3.5 chars per token)
+    char_limit = int(context_window * 0.8 * 3.5)
     
     if len(messages) <= max(MAX_KEPT_HISTORY_MESSAGES + 2, 18) and total_chars < char_limit:
         return
