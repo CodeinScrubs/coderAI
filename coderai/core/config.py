@@ -3,17 +3,10 @@ config.py - environment settings, constants, and local proxy cleanup.
 """
 import os
 
-# Keep local Ollama traffic away from VPN/proxy settings.
-os.environ["NO_PROXY"] = "localhost,127.0.0.1,::1"
-os.environ["no_proxy"] = "localhost,127.0.0.1,::1"
-
-_PROXY_VARS = [
-    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
-    "http_proxy", "https_proxy", "all_proxy",
-    "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
-]
-for _var in _PROXY_VARS:
-    os.environ.pop(_var, None)
+# Keep local Ollama traffic away from VPN/proxy settings, especially in Docker.
+_no_proxy = os.getenv("NO_PROXY", "localhost,127.0.0.1,::1,host.docker.internal")
+os.environ["NO_PROXY"] = _no_proxy
+os.environ["no_proxy"] = _no_proxy
 
 os.environ["OLLAMA_HOST"] = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 

@@ -15,6 +15,11 @@ services:
       - WEB_APP_PORT=7864
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - OLLAMA_URL=http://host.docker.internal:11434/api/generate
+      
+      # Uncomment and set your proxy if you are in a restricted region and want to use external Custom APIs (like OpenAI, Nvidia, etc.)
+      # - HTTP_PROXY=http://host.docker.internal:10808
+      # - HTTPS_PROXY=http://host.docker.internal:10808
+      
       # Add your API keys here if you want them to be available to the agent
       # - OPENAI_API_KEY=your_key
       # - ANTHROPIC_API_KEY=your_key
