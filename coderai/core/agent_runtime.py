@@ -1,4 +1,3 @@
-import os
 """
 agent_runtime.py - optional LangChain-backed model runtime.
 
@@ -10,6 +9,7 @@ behind the same response shape used by the existing agent loop.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from typing import Any, Callable
 
