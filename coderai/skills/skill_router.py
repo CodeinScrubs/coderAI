@@ -59,7 +59,7 @@ class SkillRouter:
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         self.cache_path = self.storage_dir / "skill_vectors.json"
         self.embedding_model = embedding_model or os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
-        self.ollama_url = os.getenv("OLLAMA_URL", os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")).rstrip("/")
+        self.ollama_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
         self._cache = self._load_cache()
 
     def route(self, prompt: str, skills: list, modes: dict[str, str], explicit_names: list[str] | None = None,

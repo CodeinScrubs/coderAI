@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 def list_ollama_models(base_url: str | None = None) -> list[str]:
-    url = (base_url or os.getenv("OLLAMA_URL", os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"))).rstrip("/")
+    url = (base_url or os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")).rstrip("/")
     req = urllib.request.Request(f"{url}/api/tags")
     try:
         with urllib.request.urlopen(req, timeout=3) as resp:
@@ -24,9 +24,9 @@ def list_ollama_models(base_url: str | None = None) -> list[str]:
         return []
 
 
-def is_embeddinggemma_available(base_url: str | None = None) -> bool:
+def is_nomic-embed-text_available(base_url: str | None = None) -> bool:
     models = list_ollama_models(base_url)
-    return any("embeddinggemma" in m.lower() for m in models)
+    return any("nomic-embed-text" in m.lower() for m in models)
 
 
 def resolve_embedding_model(preferred: str | None = None, base_url: str | None = None) -> str:
@@ -35,8 +35,8 @@ def resolve_embedding_model(preferred: str | None = None, base_url: str | None =
     env_model = os.getenv("OLLAMA_EMBEDDING_MODEL")
     if env_model:
         return env_model
-    if is_embeddinggemma_available(base_url):
-        return "embeddinggemma"
+    if is_nomic-embed-text_available(base_url):
+        return "nomic-embed-text"
     return "nomic-embed-text"
 
 
@@ -59,18 +59,18 @@ class EmbeddingModelManager:
             return cls._instance
 
     def get_status(self, base_url: str | None = None) -> dict:
-        installed = is_embeddinggemma_available(base_url)
+        installed = is_nomic-embed-text_available(base_url)
         return {
             "installed": installed,
-            "target_model": "embeddinggemma",
-            "active_model": "embeddinggemma" if installed else "nomic-embed-text",
+            "target_model": "nomic-embed-text",
+            "active_model": "nomic-embed-text" if installed else "nomic-embed-text",
             "is_pulling": self.is_pulling,
             "progress_text": self.progress_text,
             "completed": self.completed,
             "error": self.error,
         }
 
-    def start_pull(self, model: str = "embeddinggemma", base_url: str | None = None) -> bool:
+    def start_pull(self, model: str = "nomic-embed-text", base_url: str | None = None) -> bool:
         with self._lock:
             if self.is_pulling:
                 return True
@@ -104,7 +104,7 @@ class EmbeddingModelManager:
                             return
 
                     # Fallback to Ollama HTTP /api/pull
-                    url = (base_url or os.getenv("OLLAMA_URL", os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"))).rstrip("/")
+                    url = (base_url or os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")).rstrip("/")
                     req = urllib.request.Request(
                         f"{url}/api/pull",
                         data=json.dumps({"name": model, "stream": True}).encode("utf-8"),
@@ -142,7 +142,7 @@ class EmbeddingModelManager:
 
 class LocalEmbeddingProvider:
     def __init__(self, model: str | None = None, base_url: str | None = None, timeout: int = 8):
-        self.base_url = (base_url or os.getenv("OLLAMA_URL", os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"))).rstrip("/")
+        self.base_url = (base_url or os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")).rstrip("/")
         self.model = model or resolve_embedding_model(base_url=self.base_url)
         self.timeout = timeout
 

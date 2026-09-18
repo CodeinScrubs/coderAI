@@ -23,7 +23,7 @@ os.environ.setdefault("LITELLM_LOG", "ERROR")
 
 # Remote URL config. Override via OLLAMA_URL environment variable.
 # Default points to a local Ollama instance consistent with Local Ollama mode.
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
+OLLAMA_URL = os.getenv("OLLAMA_URL", f"{os.getenv('OLLAMA_BASE_URL', 'http://127.0.0.1:11434')}/api/generate")
 _BASE      = OLLAMA_URL.rsplit("/api/", 1)[0]
 TAGS_URL   = f"{_BASE}/api/tags"
 CHAT_URL   = f"{_BASE}/api/chat"

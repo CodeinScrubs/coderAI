@@ -694,7 +694,7 @@ def create_app() -> FastAPI:
     @app.post("/api/ollama/pull-embedding")
     async def pull_embedding():
         mgr = EmbeddingModelManager.get_instance()
-        started = mgr.start_pull("embeddinggemma")
+        started = mgr.start_pull("nomic-embed-text")
         return {"ok": started, "status": mgr.get_status()}
 
     @app.post("/api/ollama/dismiss-embedding")
