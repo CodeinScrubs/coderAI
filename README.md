@@ -266,6 +266,26 @@ Virtual environments and dependency directories are pruned before traversal. Fol
 
 The Windows portable executable includes the built-in Ollama HTTP runtime, SQLite/FTS5 indexing, project dependency graphs, persistent memory, Git integration, and the complete web UI. Optional Python integrations are used when bundled in a build; otherwise the application falls back to its built-in runtime and SQLite retrieval. Ollama itself remains a separate local application and must be running when Local Ollama mode is selected.
 
+## Docker Setup 🐳
+
+You can now run CoderAI entirely inside a Docker container! This isolates the agent's environment and dependencies.
+
+```bash
+docker-compose up --build -d
+```
+The web UI will be available at `http://localhost:7864`. The agent will operate inside the container's `/app` directory, which is mapped to your current workspace.
+
+## Architectural Overhaul
+
+CoderAI has been heavily refactored from a flat structure into a modular, engineered software architecture. All core features are organized into the `coderai/` package:
+- `coderai/core/`: Configuration, agent runtime, context builder.
+- `coderai/tools/`: File operations, AST parsers, terminal execution.
+- `coderai/memory/`: Semantic memory and hindsight databases.
+- `coderai/codebase/`: Git management, dependency graphs, syntax chunking.
+- `coderai/skills/`: Custom agent skills and routing.
+- `coderai/server/`: FastAPI and TUI interfaces.
+
+`main.py` is the single entry point for running the application.
 
 ## OpenCode Integration Features
 
