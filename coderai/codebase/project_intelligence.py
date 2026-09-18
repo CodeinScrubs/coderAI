@@ -184,7 +184,7 @@ class HierarchicalSummarizer:
         return "\n\n".join(details)
 
     def improve_with_local_model(self, prompt: str, model: str, base_url: str | None = None, timeout: int = 120) -> str:
-        url = (base_url or os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")).rstrip("/") + "/api/generate"
+        url = (base_url or os.getenv("OLLAMA_URL", os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"))).rstrip("/") + "/api/generate"
         body = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode("utf-8")
         request = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(request, timeout=timeout) as response:

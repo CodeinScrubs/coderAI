@@ -1406,7 +1406,7 @@ def _available_models(force: bool = False) -> dict:
             if not force and _MODELS_CACHE["local"]:
                 names = _MODELS_CACHE["local"]
             else:
-                data = _get_json("http://127.0.0.1:11434/api/tags", timeout=2)
+                data = _get_json(f'{os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")}/api/tags', timeout=2)
                 raw_models = data.get("models", [])
                 names = [m.get("model") or m.get("name") for m in raw_models if isinstance(m, dict)]
                 names = [name for name in names if name]
@@ -1561,7 +1561,7 @@ def _call_model(history: list[dict]) -> dict:
 
     if not is_custom:
         data = _post_json(
-            "http://127.0.0.1:11434/api/chat",
+            f'{os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")}/api/chat',
             {
                 "model": _active_model(),
                 "messages": history,
@@ -1642,7 +1642,7 @@ def _call_model_stream(history: list[dict], write_event) -> dict:
         tool_calls_raw: list[dict] = []
         finish_reason = ""
         for event in _post_json_stream(
-            "http://127.0.0.1:11434/api/chat",
+            f'{os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")}/api/chat',
             {
                 "model": _active_model(),
                 "messages": history,

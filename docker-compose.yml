@@ -8,9 +8,13 @@ services:
       - "7864:7864"
     volumes:
       - .:/app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - WEB_APP_HOST=0.0.0.0
       - WEB_APP_PORT=7864
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - OLLAMA_URL=http://host.docker.internal:11434/api/generate
       # Add your API keys here if you want them to be available to the agent
       # - OPENAI_API_KEY=your_key
       # - ANTHROPIC_API_KEY=your_key

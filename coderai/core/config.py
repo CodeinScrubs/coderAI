@@ -15,7 +15,7 @@ _PROXY_VARS = [
 for _var in _PROXY_VARS:
     os.environ.pop(_var, None)
 
-os.environ["OLLAMA_HOST"] = "http://127.0.0.1:11434"
+os.environ["OLLAMA_HOST"] = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 
 # Keep LiteLLM fully local for token counting.
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")

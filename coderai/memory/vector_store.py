@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 def list_ollama_models(base_url: str | None = None) -> list[str]:
-    url = (base_url or os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")).rstrip("/")
+    url = (base_url or os.getenv("OLLAMA_URL", os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"))).rstrip("/")
     req = urllib.request.Request(f"{url}/api/tags")
     try:
         with urllib.request.urlopen(req, timeout=3) as resp:
@@ -104,7 +104,7 @@ class EmbeddingModelManager:
                             return
 
                     # Fallback to Ollama HTTP /api/pull
-                    url = (base_url or os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")).rstrip("/")
+                    url = (base_url or os.getenv("OLLAMA_URL", os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"))).rstrip("/")
                     req = urllib.request.Request(
                         f"{url}/api/pull",
                         data=json.dumps({"name": model, "stream": True}).encode("utf-8"),
@@ -142,7 +142,7 @@ class EmbeddingModelManager:
 
 class LocalEmbeddingProvider:
     def __init__(self, model: str | None = None, base_url: str | None = None, timeout: int = 8):
-        self.base_url = (base_url or os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")).rstrip("/")
+        self.base_url = (base_url or os.getenv("OLLAMA_URL", os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"))).rstrip("/")
         self.model = model or resolve_embedding_model(base_url=self.base_url)
         self.timeout = timeout
 

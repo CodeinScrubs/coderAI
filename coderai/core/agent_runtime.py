@@ -1,3 +1,4 @@
+import os
 """
 agent_runtime.py - optional LangChain-backed model runtime.
 
@@ -95,7 +96,7 @@ class LangChainRuntime:
 
             kwargs = {
                 "model": settings.model,
-                "base_url": "http://127.0.0.1:11434",
+                "base_url": os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
                 "temperature": settings.temperature,
                 "num_predict": settings.response_token_budget,
                 "streaming": streaming,
