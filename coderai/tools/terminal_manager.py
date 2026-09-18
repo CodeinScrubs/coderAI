@@ -99,13 +99,24 @@ class TerminalSession:
 
     def get_shell_command_args(self) -> list[str]:
         if self.shell_type in {"cmd", "command prompt", "cmd.exe"}:
+            if os.name != "nt":
+                return ["bash", "-i"]
             return ["cmd.exe", "/k"]
-        if self.shell_type in {"bash", "git bash", "git-bash"}:
+        if self.shell_type in {"bash", "git bash", "git-bash", "sh"}:
             bash_path = shutil.which("bash") or r"C:\Program Files\Git\bin\bash.exe"
             if os.path.exists(bash_path):
                 return [bash_path, "-i"]
-        pwsh = shutil.which("pwsh") or shutil.which("powershell") or "powershell.exe"
-        return [pwsh, "-NoLogo"]
+            return ["/bin/sh"]
+        
+        pwsh = shutil.which("pwsh") or shutil.which("powershell")
+        if pwsh:
+            return [pwsh, "-NoLogo"]
+            
+        # Fallback for Linux if powershell is requested but doesn't exist
+        if os.name != "nt":
+            return ["bash", "-i"]
+            
+        return ["powershell.exe", "-NoLogo"]
 
     def start_shell(self) -> None:
         with self._lock:
