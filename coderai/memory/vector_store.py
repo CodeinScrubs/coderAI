@@ -24,7 +24,7 @@ def list_ollama_models(base_url: str | None = None) -> list[str]:
         return []
 
 
-def is_nomic-embed-text_available(base_url: str | None = None) -> bool:
+def is_nomic_embed_text_available(base_url: str | None = None) -> bool:
     models = list_ollama_models(base_url)
     return any("nomic-embed-text" in m.lower() for m in models)
 
@@ -35,7 +35,7 @@ def resolve_embedding_model(preferred: str | None = None, base_url: str | None =
     env_model = os.getenv("OLLAMA_EMBEDDING_MODEL")
     if env_model:
         return env_model
-    if is_nomic-embed-text_available(base_url):
+    if is_nomic_embed_text_available(base_url):
         return "nomic-embed-text"
     return "nomic-embed-text"
 
@@ -59,7 +59,7 @@ class EmbeddingModelManager:
             return cls._instance
 
     def get_status(self, base_url: str | None = None) -> dict:
-        installed = is_nomic-embed-text_available(base_url)
+        installed = is_nomic_embed_text_available(base_url)
         return {
             "installed": installed,
             "target_model": "nomic-embed-text",
