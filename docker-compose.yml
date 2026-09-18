@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  coderai:
+    build: .
+    container_name: coderai_app
+    ports:
+      - "7864:7864"
+    volumes:
+      - .:/app
+    environment:
+      - WEB_APP_HOST=0.0.0.0
+      - WEB_APP_PORT=7864
+      # Add your API keys here if you want them to be available to the agent
+      # - OPENAI_API_KEY=your_key
+      # - ANTHROPIC_API_KEY=your_key
+    restart: unless-stopped
