@@ -21,4 +21,4 @@ ENV WEB_APP_PORT=7864
 
 EXPOSE 7864
 
-CMD ["python", "launcher.py"]
+CMD ["python", "main.py"]

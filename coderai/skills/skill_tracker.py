@@ -8,7 +8,7 @@ import time
 import uuid
 from pathlib import Path
 
-from memory_manager import default_storage_root
+from coderai.memory.memory_manager import default_storage_root
 
 
 class SkillTracker:

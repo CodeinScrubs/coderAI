@@ -592,7 +592,7 @@ class GraphMemoryStore:
         if not self.workspace_path.exists() or not self.workspace_path.is_dir():
             return {"error": "Workspace directory does not exist"}
 
-        from workspace_filter import iter_workspace_files
+        from coderai.codebase.workspace_filter import iter_workspace_files
 
         project_name = self.workspace_path.name
         dependencies: list[str] = []

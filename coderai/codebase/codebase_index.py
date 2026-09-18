@@ -14,12 +14,12 @@ import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from vector_store import (
+from coderai.memory.vector_store import (
     LocalEmbeddingProvider, SharedVectorStore, cosine_similarity,
     is_sqlite_vec_available, load_sqlite_vec, serialize_vector_f32,
 )
-from workspace_filter import is_ignored_workspace_path, iter_workspace_files
-from project_intelligence import (
+from coderai.codebase.workspace_filter import is_ignored_workspace_path, iter_workspace_files
+from coderai.codebase.project_intelligence import (
     DependencyGraphBuilder, FileNode, HierarchicalSummarizer, ProjectGraph, QueryRouter, QueryType,
 )
 
@@ -32,7 +32,7 @@ INDEXABLE_EXTENSIONS = {".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".go", ".r
 MAX_FILE_BYTES = int(os.getenv("CODE_INDEX_MAX_FILE_BYTES", str(2 * 1024 * 1024)))
 
 
-from syntax_chunker import SyntaxChunker
+from coderai.codebase.syntax_chunker import SyntaxChunker
 
 
 @dataclass
@@ -432,7 +432,7 @@ class CodebaseIndex:
         classes, imports, and calls across the project.
         """
         try:
-            from code_graph_service import code_graph_service
+            from coderai.codebase.code_graph_service import code_graph_service
             if code_graph_service.is_available:
                 crg_res = code_graph_service.get_schematic_graph(self.workspace)
                 if crg_res and crg_res.get("nodes"):

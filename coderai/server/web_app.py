@@ -24,33 +24,33 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from agent_runtime import LangChainRuntime, RuntimeSettings
-from config import DEFAULT_SYSTEM_PROMPT, MODE_CUSTOM, MODE_LOCAL
-from prompt_manager import get_prompt_manager
-from skills_manager import get_skills_manager
-from git_manager import GitManager, GitError
-from memory_manager import MemoryManager
-from memory_graph import GraphMemoryStore
-from skill_tracker import SkillTracker
-from skill_router import SkillRouter
-from codebase_index import CodebaseIndex
-from workspace_filter import iter_workspace_files
-from terminal_manager import terminal_manager
-from vector_store import EmbeddingModelManager
-from tools import (
+from coderai.core.agent_runtime import LangChainRuntime, RuntimeSettings
+from coderai.core.config import DEFAULT_SYSTEM_PROMPT, MODE_CUSTOM, MODE_LOCAL
+from coderai.core.prompt_manager import get_prompt_manager
+from coderai.skills.skills_manager import get_skills_manager
+from coderai.codebase.git_manager import GitManager, GitError
+from coderai.memory.memory_manager import MemoryManager
+from coderai.memory.memory_graph import GraphMemoryStore
+from coderai.skills.skill_tracker import SkillTracker
+from coderai.skills.skill_router import SkillRouter
+from coderai.codebase.codebase_index import CodebaseIndex
+from coderai.codebase.workspace_filter import iter_workspace_files
+from coderai.tools.terminal_manager import terminal_manager
+from coderai.memory.vector_store import EmbeddingModelManager
+from coderai.tools.tools import (
     TOOL_SCHEMAS, execute_tool, get_workspace, set_tavily_config, set_workspace,
     tool_scan_project, get_approval_state, approve_pending, reject_pending, clear_approval_state,
     get_approval_decision,
     set_git_config, set_tool_event_sink, set_sandbox_config,
 )
-from context_builder import (
+from coderai.core.context_builder import (
     clip_for_context, estimate_tokens_for_messages, estimate_tokens_for_text,
     fast_tokens_for_messages, get_model_context_window, message_summary_line,
     adaptive_compact_messages, compact_tool_output,
     extract_code_outline, compact_history_assistant_turns,
 )
-from tool_parser import repair_json_tool_arguments, extract_fallback_tool_calls_from_text
-from session_manager import SessionStore, build_project_cards
+from coderai.tools.tool_parser import repair_json_tool_arguments, extract_fallback_tool_calls_from_text
+from coderai.core.session_manager import SessionStore, build_project_cards
 from plan_mode.http_api import dispatch as plan_dispatch
 from plan_mode.adapters import build_default_service
 
@@ -128,7 +128,7 @@ def _execute_tool_with_approval(name: str, args: dict, write_event=None) -> str:
 
     return f"Approval timed out after {APPROVAL_TIMEOUT}s for tool: {name}"
 
-ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).parent)).resolve()
+ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).parent.parent.parent)).resolve()
 STATIC_DIR = ROOT / "web_ui"
 HOST = os.getenv("WEB_APP_HOST", "127.0.0.1")
 PORT = int(os.getenv("WEB_APP_PORT", "7864"))
@@ -657,7 +657,7 @@ def _auto_index_workspace_background(workspace_path: str | Path) -> None:
             res = GraphMemoryStore(ws).index_project_workspace()
             
             try:
-                from code_graph_service import code_graph_service
+                from coderai.codebase.code_graph_service import code_graph_service
                 code_graph_service.build_or_update(ws, full_rebuild=False)
             except Exception:
                 pass
@@ -1072,7 +1072,7 @@ def _build_workspace_context(active_context: dict | None = None) -> str:
                 ]
                 
                 try:
-                    from code_graph_service import code_graph_service
+                    from coderai.codebase.code_graph_service import code_graph_service
                     if code_graph_service.is_available():
                         res = code_graph_service.get_minimal_context(changed_files=[path])
                         if res.get("ok") and res.get("data", {}).get("status") == "ready":
@@ -1140,7 +1140,7 @@ def _build_api_messages(final_system: str, compact: bool = True) -> list[dict]:
 
     # Proactive Hindsight Memory Recall for current project
     try:
-        from hindsight_manager import get_hindsight_manager
+        from coderai.memory.hindsight_manager import get_hindsight_manager
         hm = get_hindsight_manager()
         if hm.is_available():
             last_user_msg = next((m.get("content", "") for m in reversed(STATE["messages"]) if m.get("role") == "user"), "")
@@ -1652,7 +1652,7 @@ def _call_model_stream(history: list[dict], write_event) -> dict:
                 "options": {"temperature": float(STATE["temperature"]), "num_predict": response_budget},
             },
         ):
-            from tools import is_execution_cancelled
+            from coderai.tools.tools import is_execution_cancelled
             if is_execution_cancelled():
                 write_event({"type": "cancelled", "message": "Execution cancelled by user."})
                 break
@@ -1692,7 +1692,7 @@ def _call_model_stream(history: list[dict], write_event) -> dict:
         },
         headers=headers,
     ):
-        from tools import is_execution_cancelled
+        from coderai.tools.tools import is_execution_cancelled
         if is_execution_cancelled():
             write_event({"type": "cancelled", "message": "Execution cancelled by user."})
             break
@@ -2090,7 +2090,7 @@ def _chunk_text(text: str, size: int = 90):
 
 
 def _run_agent_stream(prompt: str, write_event, active_context: dict | None = None) -> None:
-    from tools import reset_cancel_flag, is_execution_cancelled
+    from coderai.tools.tools import reset_cancel_flag, is_execution_cancelled
     reset_cancel_flag()
     clean_prompt, skill_selections, skill_injection, turn_index = _prepare_skill_turn(prompt)
 
@@ -2246,7 +2246,7 @@ def _skills_payload() -> list[dict]:
 
 
 def _get_policies_payload(target_workspace: str | None = None) -> dict:
-    from approval_policy import policy_manager
+    from coderai.utils.approval_policy import policy_manager
     ws = target_workspace or str(get_workspace())
     return {
         "workspace_path": ws,
@@ -2257,7 +2257,7 @@ def _get_policies_payload(target_workspace: str | None = None) -> dict:
 
 
 def _update_policy_payload(data: dict) -> dict:
-    from approval_policy import policy_manager
+    from coderai.utils.approval_policy import policy_manager
     scope = data.get("scope", "workspace")
     policy = data.get("policy", {})
     mode = data.get("mode", "custom")
@@ -2270,7 +2270,7 @@ def _update_policy_payload(data: dict) -> dict:
 
 
 def _reset_policy_payload(data: dict) -> dict:
-    from approval_policy import policy_manager
+    from coderai.utils.approval_policy import policy_manager
     ws = data.get("workspace_path") or str(get_workspace())
     policy_manager.reset_workspace_policy(ws)
     return _get_policies_payload(ws)
@@ -2410,7 +2410,7 @@ class Handler(BaseHTTPRequestHandler):
             _send_json(self, index.get_schematic_graph())
             return
         if path == "/api/graph/graphify.html":
-            from code_graph_service import code_graph_service
+            from coderai.codebase.code_graph_service import code_graph_service
             html = code_graph_service.generate_graphify_html(get_workspace())
             encoded = html.encode("utf-8")
             self.send_response(200)
@@ -2420,7 +2420,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(encoded)
             return
         if path == "/api/graph/graphify-data":
-            from code_graph_service import code_graph_service
+            from coderai.codebase.code_graph_service import code_graph_service
             _send_json(self, code_graph_service.get_graphify_payload(get_workspace()))
             return
         if path == "/api/projects":
@@ -2822,7 +2822,7 @@ class Handler(BaseHTTPRequestHandler):
                 _send_json(self, {"result": result, "state": _client_state()})
                 return
             if path == "/api/cancel":
-                from tools import cancel_current_execution
+                from coderai.tools.tools import cancel_current_execution
                 proc_killed = cancel_current_execution()
                 STATE["agent_running"] = False
                 _send_json(self, {"ok": True, "cancelled": True, "process_killed": proc_killed, "state": _client_state()})

@@ -425,7 +425,7 @@ def get_memory_manager(workspace_path: str | Path | None = None) -> "MemoryManag
     """
     if workspace_path is None:
         try:
-            from tools import get_workspace
+            from coderai.tools.tools import get_workspace
             workspace_path = get_workspace()
         except Exception:
             workspace_path = default_storage_root()

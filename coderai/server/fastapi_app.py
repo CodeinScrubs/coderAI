@@ -19,12 +19,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-import web_app
-from codebase_index import CodebaseIndex
-from code_graph_service import code_graph_service
-from terminal_manager import terminal_manager
-from tools import cancel_current_execution, get_workspace, set_workspace
-from vector_store import EmbeddingModelManager
+from coderai.server import web_app
+from coderai.codebase.codebase_index import CodebaseIndex
+from coderai.codebase.code_graph_service import code_graph_service
+from coderai.tools.terminal_manager import terminal_manager
+from coderai.tools.tools import cancel_current_execution, get_workspace, set_workspace
+from coderai.memory.vector_store import EmbeddingModelManager
 
 
 def create_app() -> FastAPI:
@@ -64,7 +64,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/hindsight/status")
     async def get_hindsight_status():
-        from hindsight_manager import get_hindsight_manager
+        from coderai.memory.hindsight_manager import get_hindsight_manager
         hm = get_hindsight_manager()
         return hm.get_status()
 
@@ -374,7 +374,7 @@ def create_app() -> FastAPI:
                     
                     sink({"type": "git_clone_status", "message": f"Cloning {remote_url}"})
                     
-                    from git_manager import GitManager
+                    from coderai.codebase.git_manager import GitManager
                     manager = GitManager.clone_repository(
                         remote_url,
                         destination,
@@ -504,7 +504,7 @@ def create_app() -> FastAPI:
     @app.post("/api/git/approve")
     async def approve_action(request: Request):
         data = await request.json()
-        from tools import approve_pending, get_approval_state
+        from coderai.tools.tools import approve_pending, get_approval_state
         approve_pending(bool(data.get("always_allow_for_session")), data.get("token"))
         return get_approval_state()
 
@@ -512,7 +512,7 @@ def create_app() -> FastAPI:
     @app.post("/api/git/reject")
     async def reject_action(request: Request):
         data = await request.json()
-        from tools import reject_pending, get_approval_state
+        from coderai.tools.tools import reject_pending, get_approval_state
         reject_pending(data.get("reason", ""), data.get("token"))
         return get_approval_state()
 

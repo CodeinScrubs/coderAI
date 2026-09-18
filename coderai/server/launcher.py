@@ -18,7 +18,7 @@ def _find_free_port(start: int = 7864, attempts: int = 20) -> int:
 
 def main() -> None:
     if "--cli" in sys.argv:
-        import tui_app
+        from coderai.server import tui_app
         tui_app.main()
         return
 
@@ -38,12 +38,12 @@ def main() -> None:
         try:
             import uvicorn
             print(f"Starting CoderAI (FastAPI + Uvicorn + WebSocket) on {url}")
-            uvicorn.run("fastapi_app:app", host=host, port=port, log_level="info", ws_ping_interval=None)
+            uvicorn.run("coderai.server.fastapi_app:app", host=host, port=port, log_level="info", ws_ping_interval=None)
             return
         except Exception as exc:
             print(f"FastAPI start failed ({exc}); falling back to standard web_app...")
 
-    import web_app
+    from coderai.server import web_app
     web_app.main()
 
 

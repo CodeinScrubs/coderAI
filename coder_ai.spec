@@ -94,7 +94,7 @@ excludes = [
 ]
 
 a = Analysis(
-    ['launcher.py'],
+    ['main.py'],
     pathex=['.'],
     binaries=[],
     datas=added_datas,

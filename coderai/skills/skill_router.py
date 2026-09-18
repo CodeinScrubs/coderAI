@@ -11,7 +11,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from memory_manager import default_storage_root
+from coderai.memory.memory_manager import default_storage_root
 
 
 PERSIAN_TRANSLATION = str.maketrans({

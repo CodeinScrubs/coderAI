@@ -11,8 +11,8 @@ def main():
         print("Please run with --cli")
         return
 
-    import web_app
-    from web_app import STATE, _build_final_system_prompt, _build_api_messages, _call_model, _handle_tool_call, _compact_memory_if_needed, _message_summary_line
+    from coderai.server import web_app
+    from coderai.server.web_app import STATE, _build_final_system_prompt, _build_api_messages, _call_model, _handle_tool_call, _compact_memory_if_needed, _message_summary_line
 
     print("=========================================")
     print("        CoderAI CLI Mode (TUI)           ")

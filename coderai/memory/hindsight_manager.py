@@ -106,7 +106,7 @@ class HindsightMemoryManager:
         """Get the bank identifier scoped to the given or active workspace."""
         if not workspace_path:
             try:
-                from tools import get_workspace
+                from coderai.tools.tools import get_workspace
                 workspace_path = get_workspace()
             except ImportError:
                 workspace_path = "default"
@@ -146,7 +146,7 @@ class HindsightMemoryManager:
 
         # Local fallback via memory_manager
         try:
-            from memory_manager import get_memory_manager
+            from coderai.memory.memory_manager import get_memory_manager
             mm = get_memory_manager(workspace_path)
             fact_id = mm.index_fact(content_clean, source="hindsight_fallback")
             return {
@@ -202,7 +202,7 @@ class HindsightMemoryManager:
 
         # Fallback to local vector/memory store
         try:
-            from memory_manager import get_memory_manager
+            from coderai.memory.memory_manager import get_memory_manager
             mm = get_memory_manager(workspace_path)
             local_facts = mm.retrieve_relevant(query_clean, top_k=4)
             if local_facts:
@@ -244,7 +244,7 @@ class HindsightMemoryManager:
 
         # Local fallback
         try:
-            from memory_manager import get_memory_manager
+            from coderai.memory.memory_manager import get_memory_manager
             mm = get_memory_manager(workspace_path)
             summary = mm.get_summary()
             if summary:

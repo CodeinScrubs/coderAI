@@ -8,7 +8,7 @@ get_workspace() before reading or writing files.
 import os
 import sys
 import subprocess
-import advanced_tools
+from coderai.tools import advanced_tools
 import json
 import uuid
 import re
@@ -24,11 +24,11 @@ from pathlib import Path
 from datetime import datetime
 from typing import Callable
 
-from git_manager import GitManager
-from codebase_index import CodebaseIndex, IncrementalIndexer
-from workspace_filter import iter_workspace_files, walk_workspace
-from sandbox_runner import SandboxRunner
-from approval_policy import policy_manager
+from coderai.codebase.git_manager import GitManager
+from coderai.codebase.codebase_index import CodebaseIndex, IncrementalIndexer
+from coderai.codebase.workspace_filter import iter_workspace_files, walk_workspace
+from coderai.tools.sandbox_runner import SandboxRunner
+from coderai.utils.approval_policy import policy_manager
 
 MAX_OUTPUT_CHARS = 8_000
 EXEC_TIMEOUT     = 15
@@ -1241,12 +1241,12 @@ def tool_read_file(
         # LeanCTX outline/map mode
         mode_str = str(mode or "raw").lower()
         if mode_str in {"outline", "map"}:
-            from context_builder import extract_code_outline
+            from coderai.core.context_builder import extract_code_outline
             return extract_code_outline(content, file_path=path)
 
         # LeanCTX clean/aggressive mode (strips comments and redundant whitespace)
         if mode_str in {"clean", "aggressive"}:
-            from context_builder import compress_source_code
+            from coderai.core.context_builder import compress_source_code
             content = compress_source_code(content, mode="clean")
 
         lines = content.splitlines()
@@ -1910,7 +1910,7 @@ def tool_scan_project(max_files: int = 200) -> str:
         lines.append(f"\n_(Showing only the first {max_files} files out of {len(all_files)} total.)_")
 
     try:
-        from code_graph_service import code_graph_service
+        from coderai.codebase.code_graph_service import code_graph_service
         if code_graph_service.is_available:
             threading.Thread(target=code_graph_service.build_or_update, args=(ws,), daemon=True).start()
     except Exception:
@@ -1922,7 +1922,7 @@ def tool_scan_project(max_files: int = 200) -> str:
 def tool_remember_fact(content: str, context: str = "") -> str:
     """Retain a key observation, rule, or architectural fact into long-term Hindsight memory."""
     try:
-        from hindsight_manager import get_hindsight_manager
+        from coderai.memory.hindsight_manager import get_hindsight_manager
         hm = get_hindsight_manager()
         res = hm.retain(content=content, context=context)
         status = res.get("status", "")
@@ -1941,7 +1941,7 @@ def tool_remember_fact(content: str, context: str = "") -> str:
 def tool_recall_memory(query: str, limit: int = 5) -> str:
     """Recall relevant project memories, facts, and lessons using Hindsight hybrid search."""
     try:
-        from hindsight_manager import get_hindsight_manager
+        from coderai.memory.hindsight_manager import get_hindsight_manager
         hm = get_hindsight_manager()
         res = hm.recall(query=query, max_tokens=2048)
         p_str = res.get("prompt_string", "")
@@ -1955,7 +1955,7 @@ def tool_recall_memory(query: str, limit: int = 5) -> str:
 def tool_reflect_memory(query: str) -> str:
     """Synthesize deep lessons and project patterns using Hindsight reflection."""
     try:
-        from hindsight_manager import get_hindsight_manager
+        from coderai.memory.hindsight_manager import get_hindsight_manager
         hm = get_hindsight_manager()
         return hm.reflect(query=query)
     except Exception as e:
@@ -1965,7 +1965,7 @@ def tool_reflect_memory(query: str) -> str:
 def tool_get_project_architecture(detail_level: str = "minimal") -> str:
     """Get high-level module architecture and community clusters using code-review-graph."""
     try:
-        from code_graph_service import code_graph_service
+        from coderai.codebase.code_graph_service import code_graph_service
         res = code_graph_service.get_architecture_overview(get_workspace(), detail_level=detail_level)
         if not res.get("ok"):
             return f"Architecture overview unavailable: {res.get('error', 'unknown error')}"
@@ -1977,7 +1977,7 @@ def tool_get_project_architecture(detail_level: str = "minimal") -> str:
 def tool_get_impact_radius(files: list[str], max_depth: int = 2) -> str:
     """Calculate blast radius across folders for changed or targeted files."""
     try:
-        from code_graph_service import code_graph_service
+        from coderai.codebase.code_graph_service import code_graph_service
         res = code_graph_service.get_impact_radius(get_workspace(), changed_files=files, max_depth=max_depth)
         if not res.get("ok"):
             return f"Impact radius unavailable: {res.get('error', 'unknown error')}"
@@ -1989,7 +1989,7 @@ def tool_get_impact_radius(files: list[str], max_depth: int = 2) -> str:
 def tool_query_code_graph(pattern: str, symbol: str) -> str:
     """Query AST call graphs, callers, imports, or dependencies."""
     try:
-        from code_graph_service import code_graph_service
+        from coderai.codebase.code_graph_service import code_graph_service
         res = code_graph_service.query_graph(pattern=pattern, target=symbol, workspace_path=get_workspace())
         if not res.get("ok"):
             return f"Graph query failed: {res.get('error', 'unknown error')}"
@@ -2001,7 +2001,7 @@ def tool_query_code_graph(pattern: str, symbol: str) -> str:
 def tool_get_code_review_context(task: str = "", files: list[str] | None = None) -> str:
     """Extract a token-optimized focused subgraph slice for a review task."""
     try:
-        from code_graph_service import code_graph_service
+        from coderai.codebase.code_graph_service import code_graph_service
         res = code_graph_service.get_minimal_context(get_workspace(), task=task, changed_files=files)
         if not res.get("ok"):
             return f"Code review context unavailable: {res.get('error', 'unknown error')}"
@@ -2278,7 +2278,7 @@ _HANDLERS: dict = {
 
 
 def tool_git_status() -> str:
-    from git_manager import GitManager
+    from coderai.codebase.git_manager import GitManager
     try:
         mgr = GitManager(get_workspace())
         if not mgr.is_repo(): return "Not a git repository."
@@ -2288,7 +2288,7 @@ def tool_git_status() -> str:
         return f"Error: {e}"
 
 def tool_git_log(limit: int = 10) -> str:
-    from git_manager import GitManager
+    from coderai.codebase.git_manager import GitManager
     try:
         mgr = GitManager(get_workspace())
         if not mgr.is_repo(): return "Not a git repository."
@@ -2298,7 +2298,7 @@ def tool_git_log(limit: int = 10) -> str:
         return f"Error: {e}"
 
 def tool_git_diff(staged: bool = False) -> str:
-    from git_manager import GitManager
+    from coderai.codebase.git_manager import GitManager
     try:
         mgr = GitManager(get_workspace())
         if not mgr.is_repo(): return "Not a git repository."
@@ -2308,7 +2308,7 @@ def tool_git_diff(staged: bool = False) -> str:
         return f"Error: {e}"
 
 def tool_git_commit(message: str, files: list = None) -> str:
-    from git_manager import GitManager
+    from coderai.codebase.git_manager import GitManager
     try:
         mgr = GitManager(get_workspace())
         if not mgr.is_repo(): return "Not a git repository."
@@ -2326,7 +2326,7 @@ def tool_git_commit(message: str, files: list = None) -> str:
         return f"Error: {e}"
 
 def tool_git_checkout(branch: str, create: bool = False) -> str:
-    from git_manager import GitManager
+    from coderai.codebase.git_manager import GitManager
     try:
         mgr = GitManager(get_workspace())
         if not mgr.is_repo(): return "Not a git repository."
