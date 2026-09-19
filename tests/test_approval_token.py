@@ -11,8 +11,8 @@ get_approval_state() shape (now a superset that also carries `token`).
 import json
 from pathlib import Path
 
-import tools
-from tools import (
+import coderai.tools.tools as tools
+from coderai.tools.tools import (
     _compute_approval_token,
     allow_tool_for_session,
     clear_approval_state,

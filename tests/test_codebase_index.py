@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from codebase_index import CodeChunker, CodebaseIndex, IncrementalIndexer
+from coderai.codebase.codebase_index import CodeChunker, CodebaseIndex, IncrementalIndexer
 
 
 def _offline_index(tmp_path, monkeypatch):

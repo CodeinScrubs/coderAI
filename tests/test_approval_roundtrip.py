@@ -13,9 +13,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-import tools
-import web_app
-import fastapi_app
+import coderai.tools.tools as tools
+import coderai.server.web_app as web_app
+import coderai.server.fastapi_app as fastapi_app
 
 
 @pytest.fixture()

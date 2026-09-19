@@ -4,7 +4,7 @@ tests/test_terminal_manager.py - Unit tests for the integrated terminal subsyste
 
 import time
 from pathlib import Path
-from terminal_manager import TerminalManager, TerminalSession
+from coderai.tools.terminal_manager import TerminalManager, TerminalSession
 
 
 def test_terminal_session_creation(tmp_path: Path):

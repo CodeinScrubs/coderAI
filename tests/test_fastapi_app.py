@@ -2,8 +2,8 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from fastapi_app import create_app
-import web_app
+from coderai.server.fastapi_app import create_app
+import coderai.server.web_app as web_app
 
 
 def test_fastapi_app_state_and_cancel():

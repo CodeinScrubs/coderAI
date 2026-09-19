@@ -5,9 +5,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 
-import code_graph_service as cgs_module
-from code_graph_service import CodeGraphService, code_graph_service, normalize_graph_pattern
-from tools import (
+import coderai.codebase.code_graph_service as cgs_module
+from coderai.codebase.code_graph_service import CodeGraphService, code_graph_service, normalize_graph_pattern
+from coderai.tools.tools import (
     tool_get_project_architecture,
     tool_get_impact_radius,
     tool_query_code_graph,
@@ -16,7 +16,7 @@ from tools import (
     set_workspace,
     get_workspace,
 )
-from fastapi_app import create_app
+from coderai.server.fastapi_app import create_app
 
 
 def test_code_graph_service_availability():

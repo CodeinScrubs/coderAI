@@ -1,6 +1,6 @@
 import pytest
 from pathlib import Path
-from sandbox_runner import SandboxRunner, ExecutionResult
+from coderai.tools.sandbox_runner import SandboxRunner, ExecutionResult
 
 
 def test_sandbox_mode_resolution(tmp_path):

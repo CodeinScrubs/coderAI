@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-import tools
-from approval_policy import DEFAULT_GLOBAL_POLICY
-from tools import (
+import coderai.tools.tools as tools
+from coderai.utils.approval_policy import DEFAULT_GLOBAL_POLICY
+from coderai.tools.tools import (
     _is_destructive_command,
     _get_sanitized_env,
     clear_approval_state,
@@ -34,7 +34,7 @@ def test_destructive_command_blocking():
 
 
 def test_destructive_command_in_run_bash():
-    from tools import reset_cancel_flag
+    from coderai.tools.tools import reset_cancel_flag
     reset_cancel_flag()
     result = tool_run_bash("rm -rf /")
     assert "Security Error" in result

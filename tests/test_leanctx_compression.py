@@ -1,11 +1,11 @@
 import pytest
 from pathlib import Path
-from context_builder import (
+from coderai.core.context_builder import (
     extract_code_outline,
     compress_source_code,
     compact_history_assistant_turns,
 )
-from tools import tool_read_file, set_workspace
+from coderai.tools.tools import tool_read_file, set_workspace
 
 
 def test_extract_code_outline_python():

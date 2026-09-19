@@ -1,5 +1,5 @@
 import pytest
-from syntax_chunker import SyntaxChunker
+from coderai.codebase.syntax_chunker import SyntaxChunker
 
 
 def test_python_chunking():

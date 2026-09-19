@@ -2,9 +2,9 @@ import json
 import pytest
 from pathlib import Path
 
-from codebase_index import CodebaseIndex
-from context_builder import estimate_tokens_for_messages, estimate_tokens_for_text
-from tools import (
+from coderai.codebase.codebase_index import CodebaseIndex
+from coderai.core.context_builder import estimate_tokens_for_messages, estimate_tokens_for_text
+from coderai.tools.tools import (
     tool_write_file,
     tool_read_file,
     tool_list_files,
@@ -18,8 +18,8 @@ from tools import (
     allow_tool_for_session,
     reset_cancel_flag,
 )
-from memory_manager import MemoryManager
-from skill_tracker import SkillTracker
+from coderai.memory.memory_manager import MemoryManager
+from coderai.skills.skill_tracker import SkillTracker
 
 
 def test_full_workspace_lifecycle_e2e(tmp_path):

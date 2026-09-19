@@ -1,6 +1,6 @@
 import pytest
-from session_manager import SessionStore
-import web_app
+from coderai.core.session_manager import SessionStore
+import coderai.server.web_app as web_app
 
 
 def test_session_store_creation_and_isolation():

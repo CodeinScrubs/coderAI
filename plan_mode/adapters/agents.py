@@ -44,7 +44,7 @@ class ToolsAgentLoop(AgentLoopPort):
 
     def __init__(self, tools_module=None) -> None:
         if tools_module is None:
-            import tools as tools_module  # imported lazily to keep the domain pure
+            import coderai.tools.tools as tools_module  # imported lazily to keep the domain pure
         self._tools = tools_module
 
     def execute(self, tool_name: str, arguments: dict) -> ToolOutcome:

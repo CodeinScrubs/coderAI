@@ -2,7 +2,7 @@ import io
 import json
 import urllib.error
 
-from vector_store import LocalEmbeddingProvider
+from coderai.memory.vector_store import LocalEmbeddingProvider
 
 
 class _Response:
@@ -40,7 +40,7 @@ def test_embedding_provider_falls_back_to_legacy_ollama_endpoint(monkeypatch):
 
 
 def test_resolve_embedding_model(monkeypatch):
-    from vector_store import resolve_embedding_model, is_embeddinggemma_available, EmbeddingModelManager
+    from coderai.memory.vector_store import resolve_embedding_model, is_embeddinggemma_available, EmbeddingModelManager
 
     monkeypatch.setattr("vector_store.list_ollama_models", lambda *args, **kwargs: ["embeddinggemma:latest", "llama3:8b"])
     assert is_embeddinggemma_available() is True
@@ -52,7 +52,7 @@ def test_resolve_embedding_model(monkeypatch):
 
 
 def test_embedding_model_manager_status(monkeypatch):
-    from vector_store import EmbeddingModelManager
+    from coderai.memory.vector_store import EmbeddingModelManager
 
     monkeypatch.setattr("vector_store.list_ollama_models", lambda *args, **kwargs: ["embeddinggemma:latest"])
     mgr = EmbeddingModelManager.get_instance()

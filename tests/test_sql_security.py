@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-import tools
-from tools import clear_approval_state, execute_tool, set_workspace
+import coderai.tools.tools as tools
+from coderai.tools.tools import clear_approval_state, execute_tool, set_workspace
 
 
 def _fresh_ws(tmp_path: Path) -> Path:

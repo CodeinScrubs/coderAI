@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-import tools
-from approval_policy import DEFAULT_GLOBAL_POLICY
-from tools import (
+import coderai.tools.tools as tools
+from coderai.utils.approval_policy import DEFAULT_GLOBAL_POLICY
+from coderai.tools.tools import (
     allow_tool_for_session,
     clear_approval_state,
     execute_tool,

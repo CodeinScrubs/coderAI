@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tools import (
+from coderai.tools.tools import (
     execute_tool,
     get_workspace,
     set_workspace,

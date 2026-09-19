@@ -1,6 +1,6 @@
 import json
 import pytest
-from context_builder import compact_tool_output, adaptive_compact_messages
+from coderai.core.context_builder import compact_tool_output, adaptive_compact_messages
 
 
 def test_compact_tool_output_short():

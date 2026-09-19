@@ -16,7 +16,7 @@ from tests.plan_mode.fakes import FakeAgentLoop, FakePlanRepository, FakeWorkspa
 
 @pytest.fixture
 def web(monkeypatch):
-    import web_app
+    import coderai.server.web_app as web_app
 
     svc = PlanModeService(
         repository=FakePlanRepository(),

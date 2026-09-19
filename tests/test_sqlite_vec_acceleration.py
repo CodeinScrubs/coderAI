@@ -3,13 +3,13 @@ import sqlite3
 from pathlib import Path
 import pytest
 
-from vector_store import (
+from coderai.memory.vector_store import (
     is_sqlite_vec_available,
     load_sqlite_vec,
     serialize_vector_f32,
     SQLITE_VEC_AVAILABLE,
 )
-from codebase_index import CodebaseIndex
+from coderai.codebase.codebase_index import CodebaseIndex
 
 
 def test_sqlite_vec_helpers():

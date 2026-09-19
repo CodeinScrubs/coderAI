@@ -1,5 +1,5 @@
 import pytest
-from tool_parser import repair_json_tool_arguments, extract_fallback_tool_calls_from_text
+from coderai.tools.tool_parser import repair_json_tool_arguments, extract_fallback_tool_calls_from_text
 
 
 def test_clean_json_parsing():

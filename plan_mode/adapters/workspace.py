@@ -24,6 +24,6 @@ class PathWorkspace(WorkspacePort):
         Returns:
             An absolute directory path string.
         """
-        import tools
+        import coderai.tools.tools as tools
 
         return str(tools.get_workspace())

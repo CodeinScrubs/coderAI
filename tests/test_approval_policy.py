@@ -3,12 +3,12 @@ import pytest
 from pathlib import Path
 from fastapi.testclient import TestClient
 
-from approval_policy import (
+from coderai.utils.approval_policy import (
     ApprovalPolicyManager,
     DEFAULT_GLOBAL_POLICY,
     is_dangerous_bash,
 )
-import tools
+import coderai.tools.tools as tools
 
 
 def test_default_global_policy(tmp_path):
@@ -117,7 +117,7 @@ def test_should_require_approval(tmp_path):
 
 
 def test_api_policies_endpoints():
-    import fastapi_app
+    import coderai.server.fastapi_app as fastapi_app
 
     client = TestClient(fastapi_app.app)
 
