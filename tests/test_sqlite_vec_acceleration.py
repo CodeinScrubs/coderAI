@@ -81,7 +81,7 @@ def test_codebase_index_uses_sqlite_vec_when_chroma_unavailable(tmp_path: Path, 
 
 def test_codebase_index_fallback_when_sqlite_vec_disabled(tmp_path: Path, monkeypatch):
     # Simulate an environment where sqlite-vec is not installed
-    monkeypatch.setattr("codebase_index.is_sqlite_vec_available", lambda: False)
+    monkeypatch.setattr("coderai.codebase.codebase_index.is_sqlite_vec_available", lambda: False)
 
     index = CodebaseIndex(tmp_path)
     assert index.sqlite_vec_available is False

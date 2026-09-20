@@ -67,7 +67,7 @@ def test_fastapi_embedding_status_and_dismiss():
     assert resp.status_code == 200
     data = resp.json()
     assert "installed" in data
-    assert data.get("target_model") == "embeddinggemma"
+    assert data.get("target_model") == "nomic-embed-text"
 
     resp = client.post("/api/ollama/dismiss-embedding")
     assert resp.status_code == 200

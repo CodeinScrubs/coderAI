@@ -49,7 +49,7 @@ def test_remember_fact_reports_honest_failure(tmp_path, monkeypatch):
 
     hm = MagicMock()
     hm.retain.return_value = {"status": "error", "error": "disk full", "bank_id": "ws_ws"}
-    with patch("hindsight_manager.get_hindsight_manager", return_value=hm):
+    with patch("coderai.memory.hindsight_manager.get_hindsight_manager", return_value=hm):
         out = tool_remember_fact("some fact", context="x")
 
     assert "Failed to store" in out
@@ -63,7 +63,7 @@ def test_remember_fact_skipped_is_not_a_success(tmp_path):
 
     hm = MagicMock()
     hm.retain.return_value = {"status": "skipped", "reason": "empty content"}
-    with patch("hindsight_manager.get_hindsight_manager", return_value=hm):
+    with patch("coderai.memory.hindsight_manager.get_hindsight_manager", return_value=hm):
         out = tool_remember_fact("   ", context="x")
 
     assert "Skipped" in out
