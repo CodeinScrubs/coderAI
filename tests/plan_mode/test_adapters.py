@@ -224,7 +224,7 @@ class TestToolsAgentLoop:
 
 class TestPathWorkspace:
     def test_resolves_via_tools(self, monkeypatch):
-        import tools
+        import coderai.tools.tools as tools
 
         target = Path("C:/some/ws")
         monkeypatch.setattr(tools, "get_workspace", lambda: target)

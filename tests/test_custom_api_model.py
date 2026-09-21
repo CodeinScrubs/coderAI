@@ -1,5 +1,5 @@
-import web_app
-from config import MODE_CUSTOM, MODE_LOCAL
+import coderai.server.web_app as web_app
+from coderai.core.config import MODE_CUSTOM, MODE_LOCAL
 
 
 def _set_custom(monkeypatch, model="provider/model-v2"):

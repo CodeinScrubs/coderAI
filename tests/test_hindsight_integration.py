@@ -1,11 +1,11 @@
 import pytest
 from unittest.mock import MagicMock, patch
-from hindsight_manager import (
+from coderai.memory.hindsight_manager import (
     sanitize_bank_id,
     HindsightMemoryManager,
     get_hindsight_manager,
 )
-from tools import (
+from coderai.tools.tools import (
     tool_remember_fact,
     tool_recall_memory,
     tool_reflect_memory,

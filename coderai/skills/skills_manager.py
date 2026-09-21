@@ -15,7 +15,7 @@ from pathlib import Path
 from dataclasses import dataclass
 
 
-ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).parent)).resolve()
+ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).parent.parent.parent)).resolve()
 SKILLS_DIR = ROOT / "skills"
 
 

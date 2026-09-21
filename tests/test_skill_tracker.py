@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from skill_tracker import SkillTracker
-from skills_manager import Skill, SkillsManager
+from coderai.skills.skill_tracker import SkillTracker
+from coderai.skills.skills_manager import Skill, SkillsManager
 
 
 def test_relevant_skill_selection_returns_reason(monkeypatch, tmp_path: Path):

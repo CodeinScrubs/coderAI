@@ -1,6 +1,6 @@
 import pytest
 from pathlib import Path
-from memory_manager import MemoryManager
+from coderai.memory.memory_manager import MemoryManager
 
 
 def test_memory_manager_delete_project_by_id(tmp_path):

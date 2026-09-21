@@ -1,49 +1,59 @@
+"""
+advanced_tools.py - Low-level executors for the browser/API tool family.
 
-import json
-import subprocess
-from pathlib import Path
+Every public function here is a DUMB executor: it performs no approval or
+sandbox decisions. All gating lives in coderai/tools/tools.py (see
+_guarded_command, _run_via_sandbox, _run_host_subprocess, and
+_guarded_sql_query there), which imports advanced_tools — never the other
+way around. If you see a direct import of advanced_tools from anywhere
+other than tools.py, that is a bug.
+"""
 
-def tool_get_database_schema(connection_string: str) -> str:
+
+def _ssrf_ok(url: str) -> tuple[bool, str]:
+    """Apply the shared SSRF policy to *url* (http/https + public IPs only).
+
+    Imported lazily from ``tools`` because ``tools`` imports ``advanced_tools``
+    at module load; a module-level import back here would be a circular import.
+    By call time the ``tools`` module is fully loaded, so the lazy import is
+    safe and keeps the policy in exactly one place.
+    """
+    from coderai.tools.tools import _is_url_safe
+    return _is_url_safe(url)
+
+
+def _block_private_destination(route) -> None:
+    """Playwright route handler: allow only public-IP http(s) destinations.
+
+    Applied to *every* request a page makes (including subresources and
+    redirect follows), so a public page that pulls in ``file://`` or a private
+    IP is blocked at the network layer, not just at the top-level URL.
+    """
     try:
-        import sqlalchemy
-        from sqlalchemy import create_engine, MetaData
-        engine = create_engine(connection_string)
-        metadata = MetaData()
-        metadata.reflect(bind=engine)
-        schema_info = []
-        for table_name, table in metadata.tables.items():
-            cols = [f"{col.name} ({col.type})" for col in table.columns]
-            schema_info.append(f"Table: {table_name}\n  Columns: {', '.join(cols)}")
-        return "\n".join(schema_info)
-    except ImportError:
-        return "Error: SQLAlchemy is not installed (pip install sqlalchemy)."
-    except Exception as e:
-        return f"Error connecting to database: {e}"
+        ok, _ = _ssrf_ok(route.request.url)
+    except Exception:
+        ok = False
+    if ok:
+        route.continue_()
+    else:
+        route.abort()
 
-def tool_execute_sql_query(connection_string: str, query: str) -> str:
-    try:
-        import sqlalchemy
-        from sqlalchemy import create_engine, text
-        engine = create_engine(connection_string)
-        with engine.connect() as conn:
-            result = conn.execute(text(query))
-            if result.returns_rows:
-                rows = [dict(row._mapping) for row in result.fetchall()]
-                return json.dumps(rows, indent=2, default=str)
-            else:
-                conn.commit()
-                return "Query executed successfully. (No rows returned)"
-    except ImportError:
-        return "Error: SQLAlchemy is not installed."
-    except Exception as e:
-        return f"Error executing query: {e}"
 
 def tool_navigate_web(url: str) -> str:
+    # SSRF guard: refuse non-http schemes and private/metadata destinations
+    # before we spend the cost of launching a browser. The per-request
+    # route handler below additionally blocks any subresource or redirect
+    # that a fetched page pulls in to a private destination.
+    ok, reason = _ssrf_ok(url)
+    if not ok:
+        return f"Error: blocked by SSRF policy: {reason}"
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
+            ctx = browser.new_context()
+            ctx.route("**/*", _block_private_destination)
+            page = ctx.new_page()
             page.goto(url)
             title = page.title()
             content = page.content()
@@ -59,12 +69,18 @@ def tool_navigate_web(url: str) -> str:
     except Exception as e:
         return f"Error navigating to {url}: {e}"
 
+
 def tool_take_screenshot(url: str, output_path: str) -> str:
+    ok, reason = _ssrf_ok(url)
+    if not ok:
+        return f"Error: blocked by SSRF policy: {reason}"
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
+            ctx = browser.new_context()
+            ctx.route("**/*", _block_private_destination)
+            page = ctx.new_page()
             page.goto(url)
             page.screenshot(path=output_path, full_page=True)
             browser.close()
@@ -74,89 +90,39 @@ def tool_take_screenshot(url: str, output_path: str) -> str:
     except Exception as e:
         return f"Error taking screenshot: {e}"
 
-def tool_run_docker_container(image: str, command: str = "") -> str:
-    try:
-        cmd = f"docker run --rm {image} {command}"
-        res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
-        return f"Exit code: {res.returncode}\nStdout: {res.stdout}\nStderr: {res.stderr}"
-    except Exception as e:
-        return f"Docker execution error: {e}"
-
-def tool_get_container_logs(container_name_or_id: str) -> str:
-    try:
-        cmd = f"docker logs {container_name_or_id}"
-        res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
-        return f"Logs:\n{res.stdout}\n{res.stderr}"
-    except Exception as e:
-        return f"Docker logs error: {e}"
-
-def tool_run_linter(command: str = "flake8 .") -> str:
-    try:
-        res = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
-        return f"Linter exit code: {res.returncode}\nOutput:\n{res.stdout}\n{res.stderr}"
-    except Exception as e:
-        return f"Linter error: {e}"
-
-def tool_run_tests(command: str = "pytest") -> str:
-    try:
-        res = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=120)
-        return f"Test exit code: {res.returncode}\nOutput:\n{res.stdout}\n{res.stderr}"
-    except Exception as e:
-        return f"Test execution error: {e}"
-
-# --- Infrastructure & DX Tools ---
-def tool_run_kubectl(command: str) -> str:
-    try:
-        import subprocess
-        cmd = f"kubectl {command}"
-        res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60)
-        return f"Exit code: {res.returncode}\nStdout:\n{res.stdout}\nStderr:\n{res.stderr}"
-    except Exception as e:
-        return f"Kubectl error: {e}"
-
-def tool_run_terraform(command: str) -> str:
-    try:
-        import subprocess
-        cmd = f"terraform {command}"
-        res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
-        return f"Exit code: {res.returncode}\nStdout:\n{res.stdout}\nStderr:\n{res.stderr}"
-    except Exception as e:
-        return f"Terraform error: {e}"
 
 def tool_test_api_endpoint(url: str, method: str = "GET", headers: dict = None, json_body: dict = None) -> str:
+    # SSRF guard: the old implementation called urllib.request.urlopen(url)
+    # directly on a model-supplied URL, so the model could reach
+    # 169.254.169.254 (cloud metadata), loopback, or private hosts even though
+    # fetch_url's SSRF policy blocked the same targets. Route through the same
+    # pinned/redirect-validated fetcher as fetch_url.
+    import json
     try:
-        import urllib.request
-        import json
-        req_headers = headers or {}
-        req_headers.setdefault("User-Agent", "CoderAI-Agent/1.0")
-        
-        data = None
-        if json_body:
-            data = json.dumps(json_body).encode("utf-8")
-            req_headers.setdefault("Content-Type", "application/json")
-            
-        req = urllib.request.Request(url, data=data, headers=req_headers, method=method.upper())
-        with urllib.request.urlopen(req, timeout=30) as response:
+        from coderai.tools.tools import _ssrf_safe_fetch  # lazy: avoid circular import
+    except Exception as e:
+        return f"Error: SSRF fetcher unavailable: {e}"
+
+    req_headers = dict(headers or {})
+    req_headers.setdefault("User-Agent", "CoderAI-Agent/1.0")
+    data = None
+    if json_body:
+        data = json.dumps(json_body).encode("utf-8")
+        req_headers.setdefault("Content-Type", "application/json")
+
+    try:
+        with _ssrf_safe_fetch(
+            url, method=method, data=data, headers=req_headers, timeout=30,
+        ) as response:
             status = response.status
             resp_headers = dict(response.headers)
-            body = response.read().decode("utf-8")
-            
+            body = response.read().decode("utf-8", errors="replace")
         return json.dumps({
             "status": status,
             "headers": resp_headers,
             "body_snippet": body[:2000]
         }, indent=2)
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")
-        return f"HTTP Error {e.code}: {e.reason}\nBody: {body[:2000]}"
     except Exception as e:
+        # _ssrf_safe_fetch raises ValueError on a policy violation; surface
+        # it as an error string rather than leaking a stack trace.
         return f"API Test error: {e}"
-
-def tool_run_npm_script(script_name: str, package_manager: str = "npm") -> str:
-    try:
-        import subprocess
-        cmd = f"{package_manager} run {script_name}"
-        res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
-        return f"Exit code: {res.returncode}\nStdout:\n{res.stdout}\nStderr:\n{res.stderr}"
-    except Exception as e:
-        return f"NPM execution error: {e}"

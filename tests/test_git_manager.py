@@ -1,8 +1,8 @@
 from pathlib import Path
 import subprocess
 
-from git_manager import GitManager
-from web_app import _resolve_clone_destination
+from coderai.codebase.git_manager import GitManager
+from coderai.server.web_app import _resolve_clone_destination
 
 
 def test_non_repo_is_not_initialized_automatically(tmp_path: Path):

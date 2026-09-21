@@ -5,6 +5,73 @@ All notable changes to CoderAI are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`run_command` is now approval-gated and sandboxed, like `run_bash`.** It is
+  the "verify my changes" shell tool, but it is the same capability class as
+  `run_bash` — a host shell execution tool. It previously ran
+  `subprocess.run(command, shell=True)` directly on the host with **no**
+  approval (its gate was a no-op because `run_command` was absent from the
+  approval policy, so it fell through to the ungated return) and **no**
+  sandbox, leaving an unprompted RCE surface that the P0/P1 hardening of
+  `run_bash` had closed. `run_command` now carries the `always` default, is
+  hard-stopped against destructive commands, and executes through
+  `SandboxRunner` (Docker when available, otherwise a local `sh -c` with a
+  sanitized environment).
+- **The SSRF policy now covers every outbound tool, not just `fetch_url`.**
+  `test_api_endpoint` called `urllib.request.urlopen(url)` directly on a
+  model-supplied URL and `navigate_web`/`take_screenshot` called Playwright
+  `page.goto(url)` — none applied the SSRF guard, so the model could reach the
+  cloud metadata endpoint (`169.254.169.254`), loopback, or private hosts (and
+  `file://` for the browser tools) even though `fetch_url` blocked the same
+  target. All three now route through the shared SSRF policy.
+- **`fetch_url` pins the socket to the validated IP (closes DNS rebinding) and
+  re-validates every redirect hop.** The guard used to resolve the hostname and
+  then let `urllib` re-resolve independently at connect time — a rebinding flip
+  between check and connect could still steer the socket to a private address.
+  The connection is now made directly to the validated public IP (original
+  hostname kept for `Host`/TLS), and each 30x target is re-checked against the
+  policy before it is followed.
+
+## [1.4.1] - 2026-09-16
+
+### Fixed
+
+- **`fetch_url` is now SSRF-safe.** The guard only checked the scheme and whether
+  the hostname *string* looked local, so a DNS name that resolves to a
+  private/metadata address (`localtest.me` → `127.0.0.1`) passed and a `302` to
+  the cloud metadata service (`169.254.169.254`) was never re-checked. Every
+  resolved address is now validated (public-only), and a redirect handler
+  re-validates each hop so a public page cannot bounce the client into the
+  internal network.
+- **Terminal sessions are contained to the workspace.** A session could be
+  anchored at any path (`C:\Windows`, the user profile) and then run commands
+  there — a user-RCE surface anywhere on disk. The requested cwd is now
+  resolved; if it escapes the active workspace the session is re-anchored to the
+  workspace root, and `set_cwd` refuses to move outside it.
+- **`run_bash` requires approval on every command.** It defaulted to
+  `dangerous_only`, which ran any non-matching command unprompted — and without
+  Docker the sandbox falls back to a local shell, so the narrow destructive
+  blocklist was the only guard. The default is now `always`; the destructive
+  block is kept as defense-in-depth, and an explicit `auto` override is
+  available for users who accept the risk.
+- **Skills load again after the `coderai` package move.** The refactor moved
+  `skills_manager.py` from the repo root into `coderai/skills/`, but its
+  `SKILLS_DIR` still resolved `Path(__file__).parent / "skills"` to the
+  nonexistent `coderai/skills/skills` — so the app silently loaded **zero**
+  skills and slash commands never resolved. `ROOT` now climbs back to the repo
+  root (`parent.parent.parent`), matching `web_app.py`; the frozen `_MEIPASS`
+  path is unchanged.
+- **Fully restored the test suite after the `coderai` package move.** The
+  import repair fixed *collection* (34 errors) but ten tests still failed at
+  *runtime* on references the repair missed: `patch`/`monkeypatch.setattr`
+  targets that used the old top-level module names (`hindsight_manager`,
+  `codebase_index`, `vector_store`) now use the `coderai.*` paths, and the
+  embedding-model tests were still asserting the removed `embeddinggemma`
+  model instead of `nomic-embed-text`.
+
 ## [1.4.0] - 2026-09-16
 
 ### Changed

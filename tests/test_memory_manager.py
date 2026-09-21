@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from memory_manager import MemoryManager, get_memory_manager
+from coderai.memory.memory_manager import MemoryManager, get_memory_manager
 
 
 def test_get_memory_manager_is_fresh_and_workspace_bound(tmp_path: Path):
@@ -23,7 +23,7 @@ def test_get_memory_manager_is_fresh_and_workspace_bound(tmp_path: Path):
 
 
 def test_get_memory_manager_default_uses_active_workspace(tmp_path: Path, monkeypatch):
-    from tools import get_workspace, set_workspace
+    from coderai.tools.tools import get_workspace, set_workspace
 
     ws = tmp_path / "active-ws"
     ws.mkdir()

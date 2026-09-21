@@ -1,4 +1,4 @@
-from project_intelligence import DependencyGraphBuilder, QueryRouter, QueryType
+from coderai.codebase.project_intelligence import DependencyGraphBuilder, QueryRouter, QueryType
 
 
 def test_dependency_builder_extracts_python_structure():

@@ -2,8 +2,8 @@ import json
 import time
 import pytest
 from pathlib import Path
-from memory_graph import GraphMemoryStore, Entity, Fact, Episode, SQLiteGraphBackend
-import web_app
+from coderai.memory.memory_graph import GraphMemoryStore, Entity, Fact, Episode, SQLiteGraphBackend
+import coderai.server.web_app as web_app
 
 
 def test_sqlite_graph_backend_crud(tmp_path):

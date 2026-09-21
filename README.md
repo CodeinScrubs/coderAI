@@ -25,9 +25,9 @@ The folder-based package may start faster and is usually better for future insta
   - Folder-to-file (`contains`), cross-file (`imports`), and function execution (`calls`) relationships.
   - **Direct Jump to Code**: Click or double-click any module, function, or class node to open its parent file in the code editor, automatically scrolling to and highlighting that function or class definition.
   - Double-click empty canvas space to toggle fullscreen graph view.
-- **`embeddinggemma` RAG Integration**:
-  - Automatic detection of the `embeddinggemma` model in Ollama upon startup.
-  - Interactive modal dialog offering one-click background download (`ollama pull embeddinggemma`) with a live progress bar.
+- **`nomic-embed-text` RAG Integration**:
+  - Automatic detection of the `nomic-embed-text` model in Ollama upon startup.
+  - Interactive modal dialog offering one-click background download (`ollama pull nomic-embed-text`) with a live progress bar.
   - Generates 768-dimensional dense vector embeddings stored locally in SQLite and Chroma for pinpoint semantic codebase retrieval.
   - Seamless fallback to simple BM25 / keyword indexing if user opts out.
 - **Integrated Terminal & Command Prompt (VS Code Style with xterm.js)**:
@@ -66,28 +66,44 @@ The folder-based package may start faster and is usually better for future insta
 
 ```text
 .
-├── web_app.py                  # Local HTTP server and agent loop
-├── fastapi_app.py              # Optional FastAPI / ASGI WebSocket wrapper
-├── terminal_manager.py         # Subprocess manager for interactive PowerShell & CMD terminal sessions
-├── agent_runtime.py            # LangChain model runtime adapter
-├── launcher.py                 # EXE-friendly launcher that opens the browser
-├── tools.py                    # Tool schemas and tool execution handlers
-├── context_builder.py          # LeanCTX prompt compressor, AST outlines, and token budget manager
+├── main.py                     # Single entry point for running the application
+├── coderai/                    # All core application code lives in this package
+│   ├── codebase/               # Codebase indexing, Git, and repository intelligence
+│   │   ├── code_graph_service.py   # Code-review-graph integration: AST call-graph indexing & blast radius
+│   │   ├── codebase_index.py       # Discovery, structural chunking, incremental hybrid code index
+│   │   ├── git_manager.py          # Git clone, diff, checkpoint, commit, push, and revert layer
+│   │   ├── project_intelligence.py # Dependency graph, hierarchical summaries, and query routing
+│   │   ├── syntax_chunker.py       # Syntax-aware AST chunking for Python and multi-language sources
+│   │   └── workspace_filter.py     # Shared traversal that prunes dependencies and virtual environments
+│   ├── core/                   # Runtime, configuration, and prompt/context assembly
+│   │   ├── agent_runtime.py        # LangChain model runtime adapter with an HTTP fallback
+│   │   ├── config.py               # Runtime configuration and environment defaults
+│   │   ├── context_builder.py      # RAG context, prompt building, and token estimation helpers
+│   │   ├── prompt_manager.py       # System prompt discovery and loading
+│   │   └── session_manager.py      # Multi-session state management and project cards
+│   ├── memory/                 # Persistent and long-term memory subsystems
+│   │   ├── hindsight_manager.py    # Vectorize Hindsight client adapter, bank scoping, and local fallback
+│   │   ├── memory_graph.py         # Embedded Knowledge Graph (KG-RAG) memory subsystem
+│   │   ├── memory_manager.py       # SQLite episodic, semantic, and procedural memory
+│   │   └── vector_store.py         # Shared local Ollama embedding and Chroma adapter
+│   ├── server/                 # HTTP / WebSocket / TUI application servers
+│   │   ├── fastapi_app.py          # FastAPI / ASGI WebSocket wrapper
+│   │   ├── launcher.py             # EXE-friendly launcher that opens the browser
+│   │   ├── tui_app.py              # Terminal (TUI) interface
+│   │   └── web_app.py              # Local HTTP server for the HTML/CSS/JS workspace UI
+│   ├── skills/                 # Skill discovery, routing, and usage telemetry
+│   │   ├── skill_router.py         # Fast, semantic, and optional LLM skill-selection funnel
+│   │   ├── skill_tracker.py        # Persistent selected/loaded/applied/failed skill events and analytics
+│   │   └── skills_manager.py       # Skill discovery, selection, and usage parsing
+│   ├── tools/                  # Tool definitions, execution, terminal, and sandboxing
+│   │   ├── advanced_tools.py       # Low-level executors for the browser/API tool family
+│   │   ├── sandbox_runner.py       # Secure code execution with Docker / local process sandboxing
+│   │   ├── terminal_manager.py     # PTY/shell manager for interactive PowerShell & CMD terminal sessions
+│   │   ├── tool_parser.py          # Robust JSON auto-repair and tool-call extraction
+│   │   └── tools.py                # Tool schemas and tool execution handlers
+│   └── utils/                  # Cross-cutting security policy helpers
+│       └── approval_policy.py      # Per-tool and per-workspace security approval policies
 ├── plan_mode/                  # Plan Mode service: domain, application, adapters, http_api
-├── code_graph_service.py       # Code-review-graph integration: AST call-graph indexing & blast radius
-├── hindsight_manager.py        # Vectorize Hindsight client adapter, bank scoping, and local fallback
-├── git_manager.py              # Git clone, diff, checkpoint, commit, push, and revert layer
-├── memory_graph.py             # Embedded Knowledge Graph (KG-RAG) memory subsystem
-├── memory_manager.py           # SQLite episodic, semantic, and procedural memory
-├── codebase_index.py           # Discovery, structural chunking, incremental hybrid code index
-├── syntax_chunker.py           # Syntax-aware AST chunking for Python and multi-language sources
-├── project_intelligence.py     # Dependency graph, hierarchical summaries, and query routing
-├── vector_store.py             # Shared local Ollama embedding and Chroma adapter
-├── config.py                   # Runtime configuration and environment defaults
-├── prompt_manager.py           # System prompt discovery and loading
-├── skills_manager.py           # Skill discovery, selection, and usage parsing
-├── skill_router.py             # Fast, semantic, and optional LLM skill-selection funnel
-├── skill_tracker.py            # Persistent selected/loaded/applied/failed skill events and analytics
 ├── web_ui/                     # Frontend HTML, CSS, and JavaScript
 ├── system_prompts/             # Markdown system prompts
 ├── skills/                     # Skill definitions
@@ -118,7 +134,7 @@ python -m pip install -r requirements.txt
 ## Running From Source
 
 ```powershell
-python web_app.py
+python main.py
 ```
 
 Then open:
@@ -352,7 +368,7 @@ node --test tests/web_ui_direction.test.cjs
 
 Node.js is only needed for these development tests, not to run the application. The tests evaluate the production direction and message-rendering helpers without starting the Python backend or contacting a model provider.
 
-- `launcher.py` finds a free local port starting at `7864` and opens the browser automatically.
+- `coderai/server/launcher.py` finds a free local port starting at `7864` and opens the browser automatically.
 - LangChain is used as the preferred model runtime for Local Ollama and OpenAI-compatible Custom API mode.
 - If LangChain provider packages are unavailable, the app falls back to the built-in HTTP runtime.
 - Set `AGENT_USE_LANGCHAIN=false` to force the built-in HTTP runtime during debugging.
@@ -383,8 +399,16 @@ and non-read-only SQL — is gated behind **per-request approval** before it run
 - The advanced shell tools no longer run model-controlled strings through a shell: fixed
   binaries (kubectl/terraform/docker/npm) run as argv lists, and linter/tests run through
   the sandboxed runner, so shell metacharacters are not a second, ungated injection path.
+- **`run_bash` always prompts.** On a box without Docker the sandbox falls back to a local
+  shell, so any `run_bash` command requires approval (not just a narrow destructive-match
+  list); an explicit `auto` policy override opts out.
+- **Terminal sessions are contained to the workspace.** A session cannot be anchored outside
+  the workspace (e.g. `C:\Windows`), and cannot `cd` out of it, closing a local RCE path.
 - **SQL is local-only**: `execute_sql_query` and `get_database_schema` only reach a
   workspace-local SQLite file. Remote schemes and paths outside the workspace are
   rejected; read-only statements run unprompted, writes require approval.
+- **`fetch_url` is SSRF-safe.** The hostname is resolved and only public addresses are
+  allowed; every redirect hop is re-validated, so a fetched page cannot bounce the client
+  into the internal network or the cloud metadata service.
 - `git push` keeps its separate explicit-confirmation flow and is not part of the
   per-request token gate.

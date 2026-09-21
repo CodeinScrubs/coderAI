@@ -28,7 +28,7 @@ from coderai.codebase.git_manager import GitManager
 from coderai.codebase.codebase_index import CodebaseIndex, IncrementalIndexer
 from coderai.codebase.workspace_filter import iter_workspace_files, walk_workspace
 from coderai.tools.sandbox_runner import SandboxRunner
-from coderai.utils.approval_policy import policy_manager
+from coderai.utils.approval_policy import policy_manager, is_dangerous_bash
 
 MAX_OUTPUT_CHARS = 8_000
 EXEC_TIMEOUT     = 15
@@ -44,6 +44,11 @@ _DEFAULT_WORKSPACE.mkdir(parents=True, exist_ok=True)
 # Updated whenever the user changes the active workspace.
 WORKSPACE_DIR: Path = _DEFAULT_WORKSPACE
 GIT_APPROVAL_MODE = True
+# When True, write_file / replace_in_file auto-commit each change to the
+# workspace git repo. Off by default: auto-committing silently mutates the
+# branch the user is on (and made the test suite pollute it on every run), so
+# it is an explicit opt-in, not a side effect of editing a file.
+AUTO_COMMIT = os.getenv("CODERAI_AUTO_COMMIT", "false").lower() == "true"
 _tool_event_sink: Callable[[dict], None] | None = None
 
 
@@ -56,6 +61,11 @@ def set_sandbox_config(mode: str = "auto", docker_image: str = "python:3.11-slim
 def set_git_config(approval_mode: bool = True) -> None:
     global GIT_APPROVAL_MODE
     GIT_APPROVAL_MODE = bool(approval_mode)
+
+
+def set_auto_commit(enabled: bool = False) -> None:
+    global AUTO_COMMIT
+    AUTO_COMMIT = bool(enabled)
 
 
 def set_tool_event_sink(sink: Callable[[dict], None] | None) -> None:
@@ -1283,7 +1293,7 @@ def tool_write_file(path: str, content: str) -> str:
         p.write_text(content, encoding="utf-8")
         _update_code_index(path)
         commit_hash = ""
-        if manager.is_repo():
+        if manager.is_repo() and AUTO_COMMIT:
             commit_hash = manager.stage_and_commit([path], f"Update {path} with CoderAI")
             if commit_hash:
                 _emit_tool_event({"type": "git_commit_created", "commit": commit_hash, "message": f"Update {path} with CoderAI", "files": [path]})
@@ -1343,54 +1353,53 @@ def tool_check_file_diagnostics(path: str) -> str:
         return f"Error running diagnostics: {e}"
 
 def tool_run_command(command: str, timeout: int = 30) -> str:
-    import subprocess
-    try:
-        ws = get_workspace()
-        timeout = max(5, min(int(timeout or 30), 120))
-        
-        arguments = {"command": command, "timeout": timeout}
-        _gate_approval("run_command", arguments, f"Execute command in {ws}:\n{command}", "diff")
-        
-        # Check if the command is destructive (re-using _is_destructive_command from tools.py)
-        is_dangerous, reason = _is_destructive_command(command)
-        if is_dangerous:
-            return f"Error: Command rejected for safety reasons: {reason}"
-        
-        creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-        
-        result = subprocess.run(
-            command,
-            shell=True,
-            cwd=str(ws),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            creationflags=creationflags
-        )
-        
-        output = result.stdout
-        if result.stderr:
-            output += "\n[STDERR]:\n" + result.stderr
-            
-        if not output.strip():
-            output = "Command executed successfully with no output."
-            
-        if result.returncode != 0:
-            output = f"Command exited with code {result.returncode}\n{output}"
-            
-        # truncate if too long
-        if len(output) > 8000:
-            output = output[:8000] + "\n... [truncated]"
-            
-        return output
-    except subprocess.TimeoutExpired:
-        return f"Error: Command timed out after {timeout} seconds."
-    except ToolApprovalRequired:
-        raise
-    except Exception as e:
-        return f"Error executing command: {e}"
+    """Execute a shell command via the same runner as run_bash.
+
+    run_command is the "verify my changes" tool, but it is the same capability
+    class as run_bash — a host shell execution tool. It previously ran
+    ``subprocess.run(shell=True)`` directly on the host with no approval and no
+    sandbox (its approval gate was a no-op because it was absent from the
+    policy), leaving an unprompted RCE surface. It is now hard-stopped against
+    destructive commands, gated by the same "always" approval rule, and executed
+    through :class:`SandboxRunner` (Docker when available, otherwise a local
+    ``sh -c`` with a sanitized environment) exactly like run_bash.
+    """
+    if is_execution_cancelled():
+        return "Execution cancelled by user."
+    ws = get_workspace()
+    timeout = max(5, min(int(timeout or 30), 120))
+
+    # Hard stop for destructive commands, mirroring run_bash.
+    is_dangerous, reason = _is_destructive_command(command)
+    if is_dangerous:
+        return f"Security Error: Command blocked due to potentially destructive system operation ({reason})."
+
+    # Gated identically to run_bash (default policy "always").
+    arguments = {"command": command, "timeout": timeout}
+    _gate_approval("run_command", arguments, f"Execute command in {ws}:\n{command}", "command")
+
+    runner = SandboxRunner(
+        workspace_path=ws,
+        mode=SANDBOX_MODE,
+        docker_image=SANDBOX_DOCKER_IMAGE,
+        timeout_seconds=timeout,
+    )
+    result = runner.run_bash_command(
+        command=command,
+        env=_get_sanitized_env(),
+        process_register_cb=_register_process,
+    )
+
+    output = result.stdout
+    if result.stderr:
+        output += "\n[STDERR]:\n" + result.stderr
+    if not output.strip():
+        output = "Command executed successfully with no output."
+    if result.exit_code != 0:
+        output = f"Command exited with code {result.exit_code}\n{output}"
+    if len(output) > 8000:
+        output = output[:8000] + "\n... [truncated]"
+    return output
 
 
 def tool_list_files(pattern: str = "**/*") -> str:
@@ -1423,14 +1432,17 @@ def tool_list_files(pattern: str = "**/*") -> str:
         return f"Error: {e}"
 
 
-_DANGEROUS_PATTERNS: list[tuple[re.Pattern, str]] = [
+# Commands worth a precise, specific hard-stop reason, checked BEFORE the
+# shared DANGEROUS_BASH_PATTERNS policy list so their specific reason strings
+# are preserved (e.g. "Root / home directory deletion"). Anything not matched
+# here falls through to is_dangerous_bash — the single 11-pattern detector that
+# is_dangerous_bash and should_require_approval both use — so this hard-stop
+# can no longer silently drift out of sync with the policy list (it used to
+# miss sudo, curl|bash, dd, mkfs, and the C:\\ "rd" alias).
+_DESTRUCTIVE_OVERRIDE_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\brm\s+(-[rfRF]{1,4}\s+)?(/\s*$|/\*|~\s*$|\$HOME\b)", re.IGNORECASE), "Root / home directory deletion"),
     (re.compile(r"\b(rd|rmdir)\s+/[sS]\s+/[qQ]\s+[cC]:\\?", re.IGNORECASE), "C:\\ drive root directory wipe"),
     (re.compile(r"\bdel\s+/[fF]\s+/[sS]\s+/[qQ]\s+[cC]:\\?", re.IGNORECASE), "C:\\ drive root file wipe"),
-    (re.compile(r"\bformat\s+[a-zA-Z]:", re.IGNORECASE), "Drive format command"),
-    (re.compile(r"\bmkfs(\.\w+)?\b", re.IGNORECASE), "Filesystem format command"),
-    (re.compile(r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:", re.IGNORECASE), "Fork bomb"),
-    (re.compile(r"\b(shutdown|reboot|poweroff|init\s+[06])\b", re.IGNORECASE), "System shutdown / reboot command"),
 ]
 
 _SENSITIVE_ENV_KEYS = {
@@ -1448,11 +1460,20 @@ _SENSITIVE_ENV_KEYS = {
 
 
 def _is_destructive_command(command: str) -> tuple[bool, str]:
-    cmd_clean = command.strip()
-    for pattern, description in _DANGEROUS_PATTERNS:
-        if pattern.search(cmd_clean):
+    """Hard-stop detector for run_bash / run_command, run BEFORE the approval
+    gate so a truly destructive command is refused even if approval is set to
+    "auto".
+
+    A small set of patterns is checked first to keep their specific reason
+    strings; everything else delegates to the shared ``is_dangerous_bash``
+    policy list, so the hard-stop stays a strict superset of the policy
+    detector and the two can no longer drift apart.
+    """
+    cmd = command.strip()
+    for pattern, description in _DESTRUCTIVE_OVERRIDE_PATTERNS:
+        if pattern.search(cmd):
             return True, description
-    return False, ""
+    return is_dangerous_bash(cmd)
 
 
 def _get_sanitized_env() -> dict[str, str]:
@@ -1528,36 +1549,208 @@ def tool_run_python(code: str) -> str:
     return output or "(empty output)"
 
 
-def _is_url_safe(url: str) -> tuple[bool, str]:
+def _blocked_ip_reason(ip: "ipaddress._BaseAddress") -> str | None:
+    """Return a human-readable reason if *ip* is not a safe, public target.
+
+    Only globally-routable public addresses are allowed. Anything that is
+    loopback, private, link-local (which includes the cloud metadata address
+    169.254.169.254), unspecified, reserved, or carrier-grade-NAT is blocked.
+    ``is_global`` is the authoritative gate; the specific branches only shape
+    the message.
+    """
+    if ip.is_global:
+        return None
+    if ip.is_loopback:
+        return "loopback"
+    if ip.is_link_local:
+        return "link-local (includes cloud metadata)"
+    if ip.is_private:
+        return "private"
+    if ip.is_unspecified:
+        return "unspecified"
+    if ip.is_reserved:
+        return "reserved"
+    return "non-global"
+
+
+def _resolve_public_target(url: str) -> tuple[str | None, str]:
+    """Resolve *url* and return the first public, globally-routable IP to
+    connect to. Returns ``(ip, "")`` on success or ``(None, reason)`` on
+    failure. The returned IP is one the caller should *pin the socket to*:
+    validating DNS and then letting the connect re-resolve independently
+    leaves a DNS-rebinding window (the A record flips to a private IP between
+    our check and the connect). Pinning closes it.
+
+    Every resolved address is checked — one public and one private fails the
+    whole lookup, so a rebinding-style response with a private record cannot
+    slip past because a public one was listed first. Non-http schemes and
+    unresolvable hosts are rejected outright.
+    """
     try:
         parsed = urllib.parse.urlparse(url)
         if parsed.scheme not in {"http", "https"}:
-            return False, f"Unsupported URL scheme: {parsed.scheme}"
+            return None, f"Unsupported URL scheme: {parsed.scheme}"
         hostname = parsed.hostname
         if not hostname:
-            return False, "Invalid URL hostname"
-        if hostname.lower() in {"localhost", "127.0.0.1", "::1"}:
-            return False, "Requests to localhost/loopback addresses are blocked"
+            return None, "Invalid URL hostname"
+
         try:
-            ip = ipaddress.ip_address(hostname)
-            if ip.is_private or ip.is_loopback or ip.is_link_local:
-                return False, f"Requests to private/internal IP address {ip} are blocked"
-        except ValueError:
-            pass
-        return True, ""
+            infos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
+        except socket.gaierror as exc:
+            return None, f"Could not resolve hostname: {exc}"
+
+        if not infos:
+            return None, "Hostname resolved to no addresses"
+
+        # Any single private/link-local/loopback record fails the whole lookup
+        # (a rebinding response with one public and one private must not pass),
+        # so scan every address before returning a pin target.
+        first_public: str | None = None
+        for info in infos:
+            ip_str = info[4][0]
+            try:
+                ip = ipaddress.ip_address(ip_str)
+            except ValueError:
+                continue
+            reason = _blocked_ip_reason(ip)
+            if reason:
+                return None, f"Requests to {reason} addresses are blocked ({ip_str})"
+            if first_public is None:
+                first_public = ip_str
+        if first_public is None:
+            return None, "Hostname resolved to no usable addresses"
+        return first_public, ""
     except Exception as exc:
-        return False, f"URL parse error: {exc}"
+        return None, f"URL parse error: {exc}"
+
+
+def _is_url_safe(url: str) -> tuple[bool, str]:
+    """Return ``(True, "")`` only if *url* is an http(s) URL whose hostname
+    resolves exclusively to public, globally-routable addresses. Kept as the
+    boolean predicate (used by tests and the redirect validator); the connect
+    path uses :func:`_resolve_public_target` so it can pin the socket to the
+    validated IP.
+    """
+    _ip, reason = _resolve_public_target(url)
+    if reason:
+        return False, reason
+    return True, ""
+
+
+class _SSRFPolicyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """SSRF policy check for a single redirect hop.
+
+    The main fetch path (:func:`_ssrf_safe_fetch`) applies this same rule
+    inline in its redirect loop, so a redirect to a private/metadata address
+    is refused *before* the connection is made. This class is kept as the
+    standalone predicate (and for unit tests) — it raises when the target
+    fails the policy and otherwise delegates to urllib's default behaviour.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        safe, reason = _is_url_safe(newurl)
+        if not safe:
+            raise urllib.error.HTTPError(
+                newurl, code, f"Redirect to blocked address: {reason}", headers, fp,
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _open_pinned_http(url: str, method: str, data: bytes | None,
+                      headers: dict, timeout: int):
+    """Open one HTTP(S) request, pinning the socket to a validated public IP.
+
+    Resolves the hostname, checks *every* address, then connects directly to
+    the first public IP (so a DNS-rebinding flip between check and connect
+    cannot steer the socket to a private address). The original hostname is
+    kept for the ``Host`` header and HTTPS SNI/certificate, so virtual-host
+    routing and TLS validation still work. Returns an ``addinfourl``-like
+    response; the caller closes it.
+    """
+    import http.client
+    import ssl
+
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError(f"Unsupported URL scheme: {parsed.scheme}")
+    host = parsed.hostname
+    if not host:
+        raise ValueError("Invalid URL hostname")
+
+    ip, reason = _resolve_public_target(url)
+    if reason:
+        raise ValueError(reason)
+    connect_host = ip or host
+
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+
+    if parsed.scheme == "https":
+        ctx = ssl.create_default_context()
+        conn = http.client.HTTPSConnection(connect_host, port, context=ctx, timeout=timeout)
+    else:
+        conn = http.client.HTTPConnection(connect_host, port, timeout=timeout)
+    try:
+        hdrs = dict(headers or {})
+        hdrs["Host"] = host
+        conn.request(method.upper(), path, body=data, headers=hdrs)
+        resp = conn.getresponse()
+        return urllib.response.addinfourl(resp, resp.msg, url, resp.status)
+    except Exception:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        raise
+
+
+def _ssrf_safe_fetch(url: str, method: str = "GET", data: bytes | None = None,
+                     headers: dict | None = None, timeout: int = 30,
+                     max_redirects: int = 5):
+    """Open *url* with the SSRF policy enforced end-to-end.
+
+    For *every* hop (initial request and each redirect):
+      1. the target is checked against :func:`_is_url_safe` — non-http schemes
+         and private/metadata/loopback destinations are refused before any
+         connection;
+      2. the socket is pinned to the validated public IP
+         (:func:`_open_pinned_http`), closing DNS rebinding.
+
+    Together these close both the "public page → private target" redirect
+    bounce and the "A record flips after our check" rebinding window.
+    Returns an open ``addinfourl``-like response — use it as a context manager
+    so the underlying socket is closed. Raises ``ValueError`` on a policy
+    violation; callers surface that as an error string.
+    """
+    current_url = url
+    for _ in range(max_redirects + 1):
+        ok, reason = _is_url_safe(current_url)
+        if not ok:
+            raise ValueError(reason)
+        resp = _open_pinned_http(current_url, method, data, headers, timeout)
+        status = getattr(resp, "status", None) or getattr(resp, "code", 200)
+        if 300 <= status < 400:
+            location = resp.headers.get("Location")
+            resp.close()
+            if not location:
+                raise ValueError(f"Redirect with no Location header (status {status})")
+            # Resolve relative Location against the current URL.
+            current_url = urllib.parse.urljoin(current_url, location)
+            method = "GET"
+            data = None
+            continue
+        return resp
+    raise ValueError(f"Too many redirects (>{max_redirects}) for {url}")
 
 
 def tool_fetch_url(url: str, max_chars: int = 4000) -> str:
     try:
-        safe, reason = _is_url_safe(url)
-        if not safe:
-            return f"Error: {reason}"
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        default_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        with _ssrf_safe_fetch(url, headers=default_headers, timeout=10) as resp:
             raw = resp.read()
-        enc  = resp.headers.get_content_charset() or "utf-8"
+            enc = resp.headers.get_content_charset() or "utf-8"
         text = raw.decode(enc, errors="replace")
         if len(text) > max_chars:
             text = text[:max_chars] + "\n... [truncated]"
@@ -1713,7 +1906,7 @@ def tool_replace_in_file(path: str, old: str, new: str, regex: bool = False, cou
         p.write_text(updated, encoding="utf-8")
         _update_code_index(path)
         commit_hash = ""
-        if manager.is_repo():
+        if manager.is_repo() and AUTO_COMMIT:
             commit_hash = manager.stage_and_commit([path], f"Update {path} with CoderAI")
             if commit_hash:
                 _emit_tool_event({"type": "git_commit_created", "commit": commit_hash, "message": f"Update {path} with CoderAI", "files": [path]})
@@ -2317,11 +2510,17 @@ def tool_git_commit(message: str, files: list = None) -> str:
             files = [f["path"] for f in status.get("files", [])]
         if not files:
             return "No files specified or found to commit."
+        # Committing mutates history on the workspace repo, so it is gated
+        # behind the same approval policy as git_push / git_revert.
+        arguments = {"message": message, "files": files}
+        _gate_approval("git_commit", arguments, f"git commit {files}: {message}", "generic")
         commit_hash = mgr.stage_and_commit(files, message)
         if commit_hash:
             _emit_tool_event({"type": "git_commit_created", "commit": commit_hash, "message": message, "files": files})
             return f"Committed successfully. Hash: {commit_hash}"
         return "Nothing to commit."
+    except ToolApprovalRequired:
+        raise
     except Exception as e:
         return f"Error: {e}"
 
@@ -2330,9 +2529,15 @@ def tool_git_checkout(branch: str, create: bool = False) -> str:
     try:
         mgr = GitManager(get_workspace())
         if not mgr.is_repo(): return "Not a git repository."
+        # Switching branches can discard uncommitted work, so it is gated the
+        # same way as git_push / git_revert / git_commit.
+        arguments = {"branch": branch, "create": create}
+        _gate_approval("git_checkout", arguments, f"git checkout {branch}{' --create' if create else ''}", "generic")
         res = mgr.switch_branch(name=branch, create=create)
         import json
         return json.dumps(res, indent=2)
+    except ToolApprovalRequired:
+        raise
     except Exception as e:
         return f"Error: {e}"
 

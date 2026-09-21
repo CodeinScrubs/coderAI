@@ -3,13 +3,13 @@ import sqlite3
 from pathlib import Path
 import pytest
 
-from vector_store import (
+from coderai.memory.vector_store import (
     is_sqlite_vec_available,
     load_sqlite_vec,
     serialize_vector_f32,
     SQLITE_VEC_AVAILABLE,
 )
-from codebase_index import CodebaseIndex
+from coderai.codebase.codebase_index import CodebaseIndex
 
 
 def test_sqlite_vec_helpers():
@@ -81,7 +81,7 @@ def test_codebase_index_uses_sqlite_vec_when_chroma_unavailable(tmp_path: Path, 
 
 def test_codebase_index_fallback_when_sqlite_vec_disabled(tmp_path: Path, monkeypatch):
     # Simulate an environment where sqlite-vec is not installed
-    monkeypatch.setattr("codebase_index.is_sqlite_vec_available", lambda: False)
+    monkeypatch.setattr("coderai.codebase.codebase_index.is_sqlite_vec_available", lambda: False)
 
     index = CodebaseIndex(tmp_path)
     assert index.sqlite_vec_available is False

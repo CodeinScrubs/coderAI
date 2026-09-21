@@ -1,5 +1,5 @@
 import pytest
-from context_builder import (
+from coderai.core.context_builder import (
     clip_for_context,
     estimate_tokens_for_messages,
     estimate_tokens_for_text,

@@ -1,6 +1,6 @@
 import pytest
-from skills_manager import SkillsManager, get_skills_manager
-import web_app
+from coderai.skills.skills_manager import SkillsManager, get_skills_manager
+import coderai.server.web_app as web_app
 
 
 def test_detect_skill_commands_start_and_inline():

@@ -1,7 +1,7 @@
 import json
 import pytest
 from pathlib import Path
-import web_app
+import coderai.server.web_app as web_app
 
 
 def test_settings_persistence(tmp_path, monkeypatch):

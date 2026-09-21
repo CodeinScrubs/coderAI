@@ -935,9 +935,21 @@ def create_app() -> FastAPI:
 
     @app.post("/api/terminal/exec")
     async def terminal_exec(request: Request):
+        # Arbitrary-command endpoint with no auth: refuse non-loopback clients
+        # by default and route through the run_bash approval policy (same guard
+        # and single-use-token round-trip as web_app). The interactive terminal
+        # uses the WebSocket path and is unaffected.
+        client_host = request.client.host if request.client else ""
+        if not web_app._terminal_exec_allowed(client_host):
+            return JSONResponse(
+                {"ok": False, "status": "forbidden",
+                 "error": "terminal exec is loopback-only"}, status_code=403)
         data = await request.json()
-        session_id = data.get("session_id", "default")
         command = data.get("command", "")
+        if command and (gate := web_app._gate_terminal_exec(command)) is not None:
+            status = 403 if gate.get("status") == "blocked" else 202
+            return JSONResponse(gate, status_code=status)
+        session_id = data.get("session_id", "default")
         shell_type = data.get("shell_type", "powershell")
         cwd = data.get("cwd") or str(get_workspace())
         session = terminal_manager.get_or_create_session(session_id, shell_type=shell_type, cwd=Path(cwd))

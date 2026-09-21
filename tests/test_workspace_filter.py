@@ -1,4 +1,4 @@
-from workspace_filter import iter_workspace_files
+from coderai.codebase.workspace_filter import iter_workspace_files
 
 
 def test_workspace_filter_keeps_source_and_prunes_environment(tmp_path):

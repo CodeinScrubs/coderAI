@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from skill_router import SkillRouter, normalize_persian
-from skills_manager import Skill
+from coderai.skills.skill_router import SkillRouter, normalize_persian
+from coderai.skills.skills_manager import Skill
 
 
 def make_skill(tmp_path: Path, name: str, description: str, triggers=None):

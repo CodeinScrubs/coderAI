@@ -72,8 +72,8 @@ def _install_langchain_stubs():
 _install_langchain_stubs()
 
 # Now safe to import
-from agent_runtime import LangChainRuntime, RuntimeSettings  # noqa: E402
-from config import MODE_LOCAL, MODE_CUSTOM  # noqa: E402
+from coderai.core.agent_runtime import LangChainRuntime, RuntimeSettings  # noqa: E402
+from coderai.core.config import MODE_LOCAL, MODE_CUSTOM  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
