@@ -8,6 +8,7 @@ __pycache__/
 .pytest_tmp/
 .pytest_tmp_coderai/
 .pytest_tmp_final/
+dummy/
 
 # Virtual environments
 .venv/

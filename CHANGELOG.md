@@ -5,6 +5,36 @@ All notable changes to CoderAI are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`run_command` is now approval-gated and sandboxed, like `run_bash`.** It is
+  the "verify my changes" shell tool, but it is the same capability class as
+  `run_bash` — a host shell execution tool. It previously ran
+  `subprocess.run(command, shell=True)` directly on the host with **no**
+  approval (its gate was a no-op because `run_command` was absent from the
+  approval policy, so it fell through to the ungated return) and **no**
+  sandbox, leaving an unprompted RCE surface that the P0/P1 hardening of
+  `run_bash` had closed. `run_command` now carries the `always` default, is
+  hard-stopped against destructive commands, and executes through
+  `SandboxRunner` (Docker when available, otherwise a local `sh -c` with a
+  sanitized environment).
+- **The SSRF policy now covers every outbound tool, not just `fetch_url`.**
+  `test_api_endpoint` called `urllib.request.urlopen(url)` directly on a
+  model-supplied URL and `navigate_web`/`take_screenshot` called Playwright
+  `page.goto(url)` — none applied the SSRF guard, so the model could reach the
+  cloud metadata endpoint (`169.254.169.254`), loopback, or private hosts (and
+  `file://` for the browser tools) even though `fetch_url` blocked the same
+  target. All three now route through the shared SSRF policy.
+- **`fetch_url` pins the socket to the validated IP (closes DNS rebinding) and
+  re-validates every redirect hop.** The guard used to resolve the hostname and
+  then let `urllib` re-resolve independently at connect time — a rebinding flip
+  between check and connect could still steer the socket to a private address.
+  The connection is now made directly to the validated public IP (original
+  hostname kept for `Host`/TLS), and each 30x target is re-checked against the
+  policy before it is followed.
+
 ## [1.4.1] - 2026-09-16
 
 ### Fixed

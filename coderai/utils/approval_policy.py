@@ -27,9 +27,19 @@ DEFAULT_GLOBAL_POLICY: dict[str, str] = {
     # unprompted RCE surface. "always" (with an "auto" override for users who
     # explicitly accept the risk) is the safe default.
     "run_bash": "always",        # "always" | "auto"
+    # run_command is the "verify my changes" shell tool. It previously was absent
+    # from this policy, so should_require_approval fell through to the ungated
+    # return and _gate_approval became a no-op — leaving tool_run_command as a
+    # direct shell=True RCE with no approval and no sandbox. It is the same
+    # capability class as run_bash, so it needs the identical default.
+    "run_command": "always",     # "always" | "auto"
     "run_python": "always",        # "always" | "auto"
     "git_push": "always",          # "always" | "auto"
     "git_revert": "always",        # "always" | "auto"
+    # Committing mutates history; switching branches can discard uncommitted
+    # work. Both are git-mutation tools like push/revert, so both gate the same way.
+    "git_commit": "always",        # "always" | "auto"
+    "git_checkout": "always",      # "always" | "auto"
     # Advanced shell tools: they run external commands, so they require approval.
     "run_linter": "always",        # "always" | "auto"
     "run_tests": "always",         # "always" | "auto"
@@ -230,7 +240,15 @@ class ApprovalPolicyManager:
         # 2. Bash / Terminal commands. Any command prompts under the default
         # "always" rule; the destructive-command blocklist is a separate,
         # earlier hard stop, so policy no longer needs to inspect the command.
-        if tool_name in {"run_bash", "run_terminal_command"}:
+        # run_command is the same capability class (a shell execution tool) and
+        # must be gated identically — it is deliberately kept here, not left to
+        # fall through to the ungated return below.
+        if tool_name in {"run_bash", "run_command", "run_terminal_command"}:
+            # Note: commands that match the destructive detector are hard-stopped
+            # in the tool layer (tool_run_bash / tool_run_command) *before* the
+            # approval gate, so they never reach here — hence no "dangerous"
+            # reason is produced in the policy. Only non-destructive commands
+            # prompt for approval under the "always" rule.
             if rule == "auto":
                 return False, "", "command"
             return True, f"Policy requires review for {tool_name}", "command"
@@ -262,7 +280,7 @@ class ApprovalPolicyManager:
         # through to the ungated return below.
 
         # 4. Git mutation tools
-        if tool_name in {"git_push", "git_revert"}:
+        if tool_name in {"git_push", "git_revert", "git_commit", "git_checkout"}:
             if rule == "auto":
                 return False, "", "generic"
             return True, f"Policy requires review for Git operation '{tool_name}'", "generic"

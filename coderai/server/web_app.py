@@ -42,6 +42,7 @@ from coderai.tools.tools import (
     tool_scan_project, get_approval_state, approve_pending, reject_pending, clear_approval_state,
     get_approval_decision,
     set_git_config, set_tool_event_sink, set_sandbox_config,
+    _gate_approval, ToolApprovalRequired, _is_destructive_command,
 )
 from coderai.core.context_builder import (
     clip_for_context, estimate_tokens_for_messages, estimate_tokens_for_text,
@@ -56,6 +57,44 @@ from plan_mode.adapters import build_default_service
 
 APPROVAL_POLL_INTERVAL = float(os.getenv("AGENT_APPROVAL_POLL_INTERVAL", "1.0"))
 APPROVAL_TIMEOUT = int(os.getenv("AGENT_APPROVAL_TIMEOUT", "600"))
+
+# The server has no auth layer, so it is only safe when bound to loopback
+# (the default WEB_APP_HOST=127.0.0.1). Make that explicit: by default, refuse
+# any client that is not local. An operator who sets WEB_APP_HOST=0.0.0.0 must
+# also set WEB_APP_LOOPBACK_ONLY=false to accept remote clients.
+_LOOPBACK_ONLY = os.getenv("WEB_APP_LOOPBACK_ONLY", "true").lower() == "true"
+
+
+def _is_loopback_client(host: str) -> bool:
+    if not host:
+        return True  # unknown client (e.g. in tests) — fail open to not break local tooling
+    return host in ("127.0.0.1", "::1", "localhost") or host.startswith("127.")
+
+
+def _gate_terminal_exec(command: str) -> dict | None:
+    """Return a payload for /api/terminal/exec if *command* is not allowed to
+    run right now, else None (meaning: proceed).
+
+    Reuses the same run_bash policy and single-use token round-trip as the
+    agent tools: destructive commands are refused outright (no prompt); any
+    other command requires an explicit approval, which is issued as a token the
+    client must present via /api/approval/approve before re-POSTing. Each
+    approval is single-use, so re-executing the same command re-prompts.
+    """
+    dangerous, reason = _is_destructive_command(command)
+    if dangerous:
+        return {"ok": False, "status": "blocked", "reason": f"Blocked: {reason}"}
+    try:
+        _gate_approval("run_bash", {"command": command}, command, "command")
+    except ToolApprovalRequired as exc:
+        return {"ok": False, "status": "approval_required", "token": exc.token,
+                "tool_name": exc.tool_name, "arguments": exc.arguments,
+                "preview": exc.preview}
+    return None  # not destructive and (policy auto OR token already approved)
+
+
+def _terminal_exec_allowed(client_host: str) -> bool:
+    return not _LOOPBACK_ONLY or _is_loopback_client(client_host)
 
 
 def _is_approval_required(tool_output) -> dict | None:
@@ -3001,8 +3040,21 @@ class Handler(BaseHTTPRequestHandler):
                 _send_json(self, {"ok": True, "commit": commit_hash, "git": _git_snapshot()})
                 return
             if path == "/api/terminal/exec":
-                session_id = data.get("session_id", "default")
+                # This endpoint runs an arbitrary command on a live PTY. It has
+                # no auth, so: (1) refuse non-loopback clients by default, and
+                # (2) route through the same run_bash approval policy as the
+                # agent tools. The interactive browser terminal uses the
+                # WebSocket path instead and is unaffected.
+                if not _terminal_exec_allowed(self.client_address[0]):
+                    _send_json(self, {"ok": False, "status": "forbidden",
+                                      "error": "terminal exec is loopback-only"}, 403)
+                    return
                 command = data.get("command", "")
+                if command and (gate := _gate_terminal_exec(command)) is not None:
+                    status = 403 if gate.get("status") == "blocked" else 202
+                    _send_json(self, gate, status)
+                    return
+                session_id = data.get("session_id", "default")
                 shell_type = data.get("shell_type", "powershell")
                 cwd = data.get("cwd") or str(get_workspace())
                 session = terminal_manager.get_or_create_session(session_id, shell_type=shell_type, cwd=Path(cwd))

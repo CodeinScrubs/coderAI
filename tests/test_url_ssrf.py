@@ -9,11 +9,17 @@ hop is re-validated.
 """
 
 import socket
+import types
 import urllib.parse
 
 import pytest
 
-from coderai.tools.tools import _SSRFRedirectHandler, _is_url_safe, tool_fetch_url
+from coderai.tools.tools import (
+    _SSRFPolicyRedirectHandler,
+    _is_url_safe,
+    _resolve_public_target,
+    tool_fetch_url,
+)
 
 
 def test_non_http_scheme_blocked():
@@ -85,7 +91,7 @@ def test_redirect_handler_refuses_private_target(monkeypatch):
     # Patch _is_url_safe so the redirect target is treated as private/blocked
     # without needing real DNS.
     monkeypatch.setattr("coderai.tools.tools._is_url_safe", lambda u: (False, "private"))
-    handler = _SSRFRedirectHandler()
+    handler = _SSRFPolicyRedirectHandler()
 
     base = urllib.parse.urlparse("http://public.example/page")
     orig_req = urllib.request.Request(base.geturl(), method="GET")
@@ -108,3 +114,106 @@ def test_fetch_url_blocks_before_connecting(monkeypatch):
     out = tool_fetch_url("http://internal.example/secret")
     assert "Error" in out
     assert "private" in out.lower()
+
+
+def test_resolver_returns_pin_ip_for_public(monkeypatch):
+    # The connect path should pin the socket to the validated public IP.
+    def fake_getaddrinfo(host, port, *a, **k):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    ip, reason = _resolve_public_target("http://example.com/")
+    assert reason == ""
+    assert ip == "93.184.216.34"
+
+
+def test_resolver_pins_even_when_public_listed_first(monkeypatch):
+    # One public + one private: must be blocked (private must not be skipped
+    # because a public record was seen first).
+    def fake_getaddrinfo(host, port, *a, **k):
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.1.10", 0)),
+        ]
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    ip, reason = _resolve_public_target("http://tricky.example/")
+    assert ip is None
+    assert "192.168.1.10" in reason
+
+
+def test_fetch_pins_socket_to_validated_ip(monkeypatch):
+    # The socket must connect to the IP we validated, not re-resolve the
+    # hostname. Capture the address the fetcher connects to.
+    import http.client
+    import io
+    import email.message
+
+    connected = []
+
+    def fake_getaddrinfo(host, port, *a, **k):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+    class _FakeHTTPResponse:
+        def __init__(self):
+            self.msg = email.message.Message()
+            self.status = 200
+            self.closed = False
+            self._data = io.BytesIO(b"ok")
+        def read(self, *a):
+            return self._data.read(*a)
+        def close(self):
+            self.closed = True
+
+    def fake_conn(host, port, context=None, timeout=None, **k):
+        connected.append(host)
+        conn = types.SimpleNamespace(
+            request=lambda *a, **kw: None,
+            getresponse=lambda: _FakeHTTPResponse(),
+            close=lambda: None,
+        )
+        return conn
+
+    # _open_pinned_http does `import http.client` and references
+    # http.client.HTTPConnection, so patch the real module attribute.
+    monkeypatch.setattr(http.client, "HTTPConnection", fake_conn)
+    out = tool_fetch_url("http://example.com/")
+    # The socket went to the resolved public IP, never the hostname.
+    assert connected == ["93.184.216.34"], connected
+    assert "Error" not in out
+    assert "ok" in out
+
+
+def test_fetch_refuses_redirect_to_private_target(monkeypatch):
+    # A public URL that 302-redirects to the cloud-metadata endpoint must be
+    # refused on the second hop, not followed.
+    import email.message
+    from coderai.tools import tools
+
+    def fake_getaddrinfo(host, port, *a, **k):
+        # first hop resolves public; the redirect target resolves to metadata.
+        if host == "public.example":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 0))]
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+    class _RedirectResp:
+        status = 302
+        def __init__(self):
+            m = email.message.Message()
+            m["Location"] = "http://169.254.169.254/latest/meta-data/"
+            self.headers = m
+        def close(self):
+            pass
+
+    opened_urls = []
+
+    def fake_open(url, method, data, headers, timeout):
+        opened_urls.append(url)
+        return _RedirectResp()
+    monkeypatch.setattr(tools, "_open_pinned_http", fake_open)
+
+    out = tool_fetch_url("http://public.example/")
+    assert "Error" in out
+    assert "blocked" in out.lower() or "169.254.169.254" in out
+    # The fetcher must never have opened a connection to the metadata host.
+    assert "169.254.169.254" not in " ".join(opened_urls)
