@@ -833,6 +833,14 @@ def create_app() -> FastAPI:
 
     @app.websocket("/api/terminal/ws")
     async def terminal_websocket(websocket: WebSocket):
+        # Same loopback-only boundary as /api/terminal/exec: this socket
+        # carries a live PTY (arbitrary shell access) and has no auth.
+        # Interactive keystrokes can't be gated per-input, so the network
+        # boundary (loopback-only unless WEB_APP_LOOPBACK_ONLY=false) is the guard.
+        client_host = websocket.client.host if websocket.client else ""
+        if not web_app._terminal_exec_allowed(client_host):
+            await websocket.close(code=1008)  # policy violation
+            return
         await websocket.accept()
         session_id = websocket.query_params.get("session_id", "default")
         shell = websocket.query_params.get("shell", "powershell")

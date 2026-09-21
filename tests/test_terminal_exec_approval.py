@@ -7,7 +7,9 @@ both web_app and fastapi_app; the latter is the default live server). Now it:
   * refuses non-loopback clients by default (WEB_APP_LOOPBACK_ONLY), and
   * routes through the run_bash approval policy (destructive = hard block,
     anything else = single-use approval token).
-The interactive browser terminal uses the WebSocket path, which is unaffected.
+The interactive browser terminal uses the WebSocket path (/api/terminal/ws),
+which is guarded at the same loopback boundary (per-keystroke approval on a
+live PTY is impractical, so the network boundary is the guard).
 """
 
 import pytest
@@ -44,6 +46,16 @@ def test_exec_refuses_non_loopback(client, monkeypatch):
     r = client.post("/api/terminal/exec", json={"command": "echo hi"})
     assert r.status_code == 403
     assert r.json().get("status") == "forbidden"
+
+
+def test_ws_refuses_non_loopback(client, monkeypatch):
+    # The interactive terminal WebSocket carries a live PTY. A non-loopback
+    # client must be refused at the boundary (closed before it is accepted),
+    # so no shell is ever spawned for a remote socket.
+    monkeypatch.setattr(web_app, "_terminal_exec_allowed", lambda host: False)
+    with pytest.raises(Exception):
+        with client.websocket_connect("/api/terminal/ws?session_id=t"):
+            pass  # reaching here would mean the socket was (wrongly) accepted
 
 
 # ── destructive hard block ───────────────────────────────────────────────────
