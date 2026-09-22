@@ -33,11 +33,22 @@ def main() -> None:
     url = f"http://{host}:{port}/"
     threading.Timer(1.2, lambda: webbrowser.open(url)).start()
 
+    # Print the access token once at boot (so it is available before any remote
+    # client connects). Loopback clients never need it; remote clients send it
+    # as 'Authorization: Bearer <token>' or a '?token=<token>' query param.
+    from coderai.server import web_app as _web
+    if host not in ("127.0.0.1", "::1", "localhost"):
+        _web.get_auth_token()
+
     framework = os.getenv("SERVER_FRAMEWORK", "fastapi").lower()
     if framework == "fastapi":
         try:
             import uvicorn
             print(f"Starting CoderAI (FastAPI + Uvicorn + WebSocket) on {url}")
+            # Warm litellm (~100s import) in the background so the server comes
+            # up instantly; token counting uses the char estimator until warm.
+            from coderai.server import web_app as _web
+            threading.Thread(target=_web.warmup_litellm, name="litellm-warmup", daemon=True).start()
             uvicorn.run("coderai.server.fastapi_app:app", host=host, port=port, log_level="info", ws_ping_interval=None)
             return
         except Exception as exc:

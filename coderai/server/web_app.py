@@ -97,6 +97,85 @@ def _terminal_exec_allowed(client_host: str) -> bool:
     return not _LOOPBACK_ONLY or _is_loopback_client(client_host)
 
 
+# --- Access-token auth layer ------------------------------------------------
+#
+# The loopback guard above only helps while the server is bound to 127.0.0.1.
+# This adds a second, independent boundary: a single access token. Loopback
+# (and test) clients are trusted without one, so the local browser keeps
+# working with no UX change; any non-loopback client must present the token or
+# be refused — making an opened bind actually safe, not just "safe by default
+# bind". The token is a process secret: read from CODERAI_AUTH_TOKEN, else
+# generated once at boot and printed once (never persisted, never logged).
+#
+# Deliberate scope: this guards HTTP + WS at the server boundary. It does NOT
+# make the loopback-only terminal endpoints remote-safe — those keep their own
+# tighter guard (see /api/terminal/* below).
+_auth_token = os.getenv("CODERAI_AUTH_TOKEN", "")
+_auth_lock = threading.Lock()
+
+
+def _is_trusted_client(host: str) -> bool:
+    """A client needs no token if it is local (loopback) or a test client."""
+    if not host:
+        return True  # unknown (e.g. tests) — fail open so local tooling keeps working
+    return _is_loopback_client(host) or host in ("testclient", "testserver")
+
+
+def get_auth_token() -> str:
+    """Return the active access token, generating + printing one on first use
+    if CODERAI_AUTH_TOKEN was not set. Idempotent; thread-safe (FastAPI
+    dispatches in a thread pool)."""
+    global _auth_token
+    if _auth_token:
+        return _auth_token
+    with _auth_lock:
+        if not _auth_token:
+            _auth_token = uuid.uuid4().hex + uuid.uuid4().hex[:8]
+            print("\n*** CoderAI access token (shown once — save it. Remote "
+                  "clients must send 'Authorization: Bearer <token>' or a "
+                  "?token=<token> query param): ***\n    " + _auth_token +
+                  "\n    Local (loopback) clients do not need it.\n***\n",
+                  flush=True)
+    return _auth_token
+
+
+def _presented_token(headers, query) -> str:
+    """Extract the presented token from an Authorization header or query."""
+    auth = (headers.get("Authorization") or headers.get("authorization") or "").strip()
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    if auth:
+        return auth
+    if query is not None:
+        token = query.get("token") if isinstance(query, dict) else None
+        if token:
+            if isinstance(token, list):
+                token = token[0]
+            return str(token)
+    return ""
+
+
+def check_auth(host: str, headers, query) -> bool:
+    """True if *host*/*headers*/*query* are allowed through.
+
+    Loopback and test clients are trusted. Everyone else must present the
+    access token (constant-time compare).
+    """
+    if _is_trusted_client(host):
+        return True
+    from hmac import compare_digest
+    return compare_digest(_presented_token(headers, query), get_auth_token())
+
+
+def auth_status_payload() -> dict:
+    """Describe the auth posture for /api/auth/status (never leaks the token)."""
+    return {
+        "auth_enabled": True,
+        "loopback_only": _LOOPBACK_ONLY,
+        "token_configured": bool(os.getenv("CODERAI_AUTH_TOKEN", "")),
+    }
+
+
 def _is_approval_required(tool_output) -> dict | None:
     if not isinstance(tool_output, str):
         return None
@@ -187,14 +266,40 @@ DEFAULT_CONTEXT_TOKEN_BUDGET = int(os.getenv("AGENT_CONTEXT_TOKENS", "24000"))
 DEFAULT_RESPONSE_TOKEN_BUDGET = int(os.getenv("AGENT_RESPONSE_TOKENS", "8192"))
 MAX_AUTO_CONTINUES = int(os.getenv("AGENT_AUTO_CONTINUES", "8"))
 
-try:
-    from litellm import token_counter as _litellm_token_counter
-    from litellm import model_cost as _litellm_model_cost
-    _litellm_import_error = ""
-except Exception as exc:
-    _litellm_token_counter = None
-    _litellm_model_cost = {}
-    _litellm_import_error = repr(exc)
+# litellm pulls in the openai/azure/anthropic SDKs and takes ~100s to import —
+# a cost that used to run at module import time, slowing every app boot and
+# every pytest collection. It is now warmed up in a background daemon thread
+# after the server starts; until it finishes, callers fall back to the fast
+# char-based estimator (they guard on the counter being truthy).
+_litellm_state = (None, {}, "")
+_LITELLM_LOCK = threading.Lock()
+
+
+def _get_litellm():
+    """Return the current ``(token_counter, model_cost, error)`` triple.
+
+    Never imports — the import happens once in :func:`warmup_litellm`, off the
+    request path, so a not-yet-warmed server returns ``(None, {}, "")`` and
+    callers use the estimator.
+    """
+    return _litellm_state
+
+
+def warmup_litellm() -> None:
+    """Import litellm (once) and publish the result. Run from a daemon thread."""
+    global _litellm_state
+    if _litellm_state[0] is not None:
+        return
+    with _LITELLM_LOCK:
+        if _litellm_state[0] is not None:
+            return
+        os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+        os.environ.setdefault("LITELLM_LOG", "ERROR")
+        try:
+            from litellm import model_cost, token_counter
+            _litellm_state = (token_counter, model_cost, "")
+        except Exception as exc:
+            _litellm_state = (None, {}, repr(exc))
 
 STATE_LOCK = threading.RLock()
 
@@ -871,9 +976,10 @@ def _clip_for_context(text: str, limit: int) -> str:
 
 
 def _estimate_tokens_for_messages(messages: list[dict]) -> int:
-    if _litellm_token_counter:
+    counter, _cost, _err = _get_litellm()
+    if counter:
         try:
-            return int(_litellm_token_counter(model=_active_model(), messages=messages))
+            return int(counter(model=_active_model(), messages=messages))
         except Exception:
             pass
     chars = sum(len(str(message.get("content", ""))) + 24 for message in messages)
@@ -893,13 +999,14 @@ def _model_context_window(model: str) -> tuple[int, str]:
     cleaned = (model or "").strip()
     budget = max(4_000, int(STATE.get("context_token_budget") or DEFAULT_CONTEXT_TOKEN_BUDGET))
 
-    if _litellm_token_counter:
+    counter, model_cost, _err = _get_litellm()
+    if counter:
         candidates = [cleaned]
         if STATE.get("conn_mode") == MODE_LOCAL and not cleaned.startswith("ollama/"):
             candidates.append(f"ollama/{cleaned}")
         for candidate in candidates:
             try:
-                info = _litellm_model_cost.get(candidate, {}) or {}
+                info = model_cost.get(candidate, {}) or {}
                 max_input = int(info.get("max_input_tokens") or 0)
                 if max_input > 0:
                     return max_input, "litellm"
@@ -2316,6 +2423,7 @@ def _reset_policy_payload(data: dict) -> dict:
 
 
 def _client_state(session_id: str | None = None) -> dict:
+    _litellm_counter, _litellm_cost, _litellm_error = _get_litellm()
     st = get_session_state(session_id)
     models_payload = _available_models()
     return {
@@ -2354,8 +2462,8 @@ def _client_state(session_id: str | None = None) -> dict:
             "enabled": st["memory_enabled"],
             "summary_chars": len(st.get("memory_summary", "")),
             "summarized_messages": st.get("memory_summarized_count", 0),
-            "token_counter": "litellm" if _litellm_token_counter else "estimated",
-            "token_counter_error": _litellm_import_error,
+            "token_counter": "litellm" if _litellm_counter else "estimated",
+            "token_counter_error": _litellm_error,
             "visible_messages": len(st["messages"]),
             "persistent": _memory_payload(),
         },
@@ -2404,9 +2512,32 @@ def _clear_session_state(session_id: str | None = None) -> dict:
 
 
 class Handler(BaseHTTPRequestHandler):
+    def _auth_check(self) -> bool:
+        """Enforce the access-token boundary. Loopback/test clients pass; any
+        other client needs the token (header or ?token=). Returns True if the
+        request may proceed, else sends 401 and returns False."""
+        parsed = urlparse(self.path)
+        query = parse_qs(parsed.query)
+        if check_auth(self.client_address[0], self.headers, query):
+            return True
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", "Bearer")
+        self.send_header("Content-Type", "application/json")
+        body = json.dumps({"error": "unauthorized",
+                           "message": "remote access requires the CoderAI token"}).encode()
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        return False
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
+        if path.startswith("/api/") and not self._auth_check():
+            return
+        if path == "/api/auth/status":
+            _send_json(self, auth_status_payload())
+            return
         if path == "/api/plans" or path.startswith("/api/plans/"):
             status, payload = dispatch_plan_request("GET", path, {})
             _send_json(self, payload, status)
@@ -2578,6 +2709,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        if path.startswith("/api/") and not self._auth_check():
+            return
         try:
             data = _read_json(self)
             if path == "/api/plans" or path.startswith("/api/plans/"):
@@ -3092,6 +3225,7 @@ def main() -> None:
     _activate_workspace_memory(get_workspace())
     STATIC_DIR.mkdir(exist_ok=True)
     server = ThreadingHTTPServer((HOST, PORT), Handler)
+    threading.Thread(target=warmup_litellm, name="litellm-warmup", daemon=True).start()
     print(f"Web UI running at http://{HOST}:{PORT}")
     server.serve_forever()
 

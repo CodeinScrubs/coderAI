@@ -13,12 +13,16 @@ services:
     environment:
       - WEB_APP_HOST=0.0.0.0
       - WEB_APP_PORT=7864
-      # The server refuses non-loopback clients by default (no auth layer).
-      # Inside the container the browser's request arrives from Docker's NAT
-      # gateway (a non-loopback IP), so the loopback-only guard would reject
-      # the UI. Disable it here because reachability is instead limited by the
-      # published port (7864) on the host.
+      # Two independent guards. (1) The server refuses non-loopback clients by
+      # default; inside the container the browser's request arrives from
+      # Docker's NAT gateway (a non-loopback IP), so disable the loopback-only
+      # guard. (2) An access token then gates that non-loopback access — set a
+      # fixed value here (any string) and put it in the browser (Settings →
+      # Remote access, or open the page as http://localhost:7864/?token=SECRET).
+      # Loopback clients never need it; without a token, non-loopback requests
+      # are refused.
       - WEB_APP_LOOPBACK_ONLY=false
+      - CODERAI_AUTH_TOKEN=change-me-please
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - OLLAMA_URL=http://host.docker.internal:11434/api/generate
       

@@ -64,11 +64,30 @@ function getActiveSessionId() {
   return sid;
 }
 
+// Access token for remote access (loopback never needs it). Kept in
+// sessionStorage like the session id — it is a per-browser secret, not a server
+// setting. Read from the ?token= URL param or the settings field, if present.
+function getCoderAuthToken() {
+  const fromUrl = new URLSearchParams(window.location.search).get("token");
+  if (fromUrl) {
+    sessionStorage.setItem("coderai_auth_token", fromUrl);
+  }
+  return sessionStorage.getItem("coderai_auth_token") || "";
+}
+
+function authHeaders(extra = {}) {
+  const token = getCoderAuthToken();
+  if (token && !extra["Authorization"]) {
+    return { Authorization: "Bearer " + token, ...extra };
+  }
+  return extra;
+}
+
 async function api(path, options = {}) {
   const headers = {
     "Content-Type": "application/json",
     "X-Session-ID": getActiveSessionId(),
-    ...(options.headers || {}),
+    ...authHeaders(options.headers || {}),
   };
   const res = await fetch(path, {
     ...options,
@@ -1094,7 +1113,7 @@ async function cloneGitRepository() {
   try {
     const response = await fetch("/api/git/clone_stream", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify({
         remote_url: remoteUrl,
         destination: $("gitCloneDestination").value.trim(),
@@ -1951,6 +1970,34 @@ function updateTavilyPanel(settings = state.data?.settings || {}) {
     : "Tavily is disabled";
 }
 
+function initAuthUI() {
+  const field = $("authToken");
+  const status = $("authStatus");
+  if (!field || !status) return;
+  field.value = getCoderAuthToken();
+  field.addEventListener("change", () => {
+    if (field.value.trim()) sessionStorage.setItem("coderai_auth_token", field.value.trim());
+    else sessionStorage.removeItem("coderai_auth_token");
+    updateAuthStatusText();
+  });
+  updateAuthStatusText();
+  // Report the server's posture (best-effort; a remote 401 here is itself the
+  // signal that a token is required).
+  api("/api/auth/status").then((s) => {
+    status.textContent = s.loopback_only
+      ? "Loopback-only — no token needed from this machine"
+      : (getCoderAuthToken() ? "Remote access · token set" : "Remote access · token required");
+  }).catch(() => {
+    status.textContent = "Cannot reach server — remote access needs the token";
+  });
+  function updateAuthStatusText() {
+    if (!status) return;
+    status.textContent = field.value.trim()
+      ? "Remote access · token set"
+      : "Local access — no token required";
+  }
+}
+
 async function saveSettings() {
   const isCustom = $("connMode").value.includes("Custom") || String(state.data?.settings?.conn_mode || "").toLowerCase().includes("custom");
   const apiUrl = ($("modalCustomApiUrl")?.value?.trim() || $("customApiUrl")?.value?.trim() || state.data?.settings?.custom_api_url || "https://api.openai.com/v1");
@@ -2089,7 +2136,8 @@ async function streamViaWebSocket(prompt, activeContext, ctx, controller) {
   if (typeof WebSocket === "undefined") throw new Error("WebSocket not supported");
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
   const sid = getActiveSessionId();
-  const wsUrl = `${protocol}//${location.host}/ws/chat?session_id=${encodeURIComponent(sid)}`;
+  const wsToken = getCoderAuthToken() ? `&token=${encodeURIComponent(getCoderAuthToken())}` : "";
+  const wsUrl = `${protocol}//${location.host}/ws/chat?session_id=${encodeURIComponent(sid)}${wsToken}`;
 
   return new Promise((resolve, reject) => {
     let ws;
@@ -2170,7 +2218,7 @@ async function streamViaHttp(prompt, activeContext, ctx, controller) {
   const sid = getActiveSessionId();
   const res = await fetch("/api/chat_stream", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Session-ID": sid },
+    headers: { "Content-Type": "application/json", "X-Session-ID": sid, ...authHeaders() },
     body: JSON.stringify({ session_id: sid, prompt, active_context: activeContext }),
     signal: controller.signal,
   });
@@ -2234,7 +2282,7 @@ async function sendPrompt(prompt) {
     controller.abort();
     ctx.showStreamNotice("⛔ Stopping generation...");
     try {
-      await fetch("/api/cancel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
+      await fetch("/api/cancel", { method: "POST", headers: { "Content-Type": "application/json", ...authHeaders() }, body: JSON.stringify({}) });
     } catch (_) {}
   };
   $("stopBtn").addEventListener("click", stopHandler, { once: true });
@@ -3782,7 +3830,8 @@ function connectTerminalWebSocket() {
 
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const replayParam = terminalState.hasRenderedOutput ? "&replay=0" : "&replay=1";
-  const wsUrl = `${protocol}//${window.location.host}/api/terminal/ws?session_id=${terminalState.sessionId}&shell=${encodeURIComponent(terminalState.shellType)}${replayParam}`;
+  const wsToken = getCoderAuthToken() ? `&token=${encodeURIComponent(getCoderAuthToken())}` : "";
+  const wsUrl = `${protocol}//${window.location.host}/api/terminal/ws?session_id=${terminalState.sessionId}&shell=${encodeURIComponent(terminalState.shellType)}${replayParam}${wsToken}`;
 
   const ws = new WebSocket(wsUrl);
   terminalState.socket = ws;
@@ -4067,6 +4116,7 @@ setupSkillSlashAutocomplete();
 initSchematicArchitectureGraph();
 initIntegratedTerminal();
 initApprovalPoliciesUI();
+initAuthUI();
 installEditorMetricStyles();
 updateGitAuthPanel();
 refresh().catch((err) => {

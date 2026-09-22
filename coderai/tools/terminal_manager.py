@@ -13,7 +13,7 @@ import threading
 import time
 from pathlib import Path
 import re
-from typing import Generator
+from typing import Any, Generator
 
 try:
     import winpty

@@ -412,3 +412,24 @@ and non-read-only SQL — is gated behind **per-request approval** before it run
   into the internal network or the cloud metadata service.
 - `git push` keeps its separate explicit-confirmation flow and is not part of the
   per-request token gate.
+
+### Network access (token + loopback guard)
+
+The server is bound to `127.0.0.1` by default, which is the primary protection.
+Two independent layers add defense in depth for when that bind is opened:
+
+- **Loopback-only guard** (`WEB_APP_LOOPBACK_ONLY`, default `true`): refuses any
+  HTTP/WebSocket client that is not local. Set `false` only when the browser
+  genuinely reaches the server from a non-loopback address (e.g. Docker's NAT
+  gateway).
+- **Access token** (`CODERAI_AUTH_TOKEN`): a process secret. Loopback and local
+  clients never need it, so the usual single-machine workflow is unchanged. Any
+  **non-loopback** client must present it — `Authorization: Bearer <token>` for
+  HTTP, or `?token=<token>` for WebSockets — else the request is refused (401 /
+  WS close). If `CODERAI_AUTH_TOKEN` is unset, a token is generated at boot and
+  printed once; the UI shows it under **Settings → Remote access** and also
+  accepts it from a `?token=` in the page URL.
+
+Note: these gate the *transport*. They do not make the loopback-only terminal
+endpoints remote-safe — those keep their own tighter guard (the terminal
+WebSocket stays loopback-only by default).
