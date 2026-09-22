@@ -8,6 +8,7 @@ import ast
 import json
 import os
 import re
+import threading
 from typing import Any, Callable
 
 
@@ -357,27 +358,74 @@ def adaptive_compact_messages(
 
 
 _TIKTOKEN_CACHE: dict[str, Any] = {}
+_TIKTOKEN_ATTEMPTED = False
+_TIKTOKEN_LOCK = threading.Lock()
+_TIKTOKEN_FETCH_BUDGET_S = 5.0  # never block a token estimate on a slow/blocked fetch
+
+
+def _fetch_tiktoken_encoding(key: str) -> Any:
+    """Resolve a tiktoken encoding for *key* (the network may download a
+    BPE file on first use). Returns None on any failure."""
+    import tiktoken
+    if key:
+        try:
+            return tiktoken.encoding_for_model(key)
+        except Exception:
+            pass
+    return tiktoken.get_encoding("cl100k_base")
 
 
 def _get_tiktoken_encoding(model: str = "") -> Any:
-    global _TIKTOKEN_CACHE
+    """Return a tiktoken encoding for *model*, or None to use the char
+    fallback.
+
+    tiktoken's first use may need to download a BPE file, which on a blocked
+    or slow network can hang for a minute or more. That must never block a
+    token *estimate* (a fast approximation is the whole point of the fallback
+    path). So the fetch runs in a daemon thread with a short wall-clock
+    budget; if it isn't ready, we return None and the caller estimates by
+    character count. One attempt is made per process (a failure here is almost
+    certainly the network, so we don't keep retrying on every message).
+    """
+    global _TIKTOKEN_ATTEMPTED
     key = (model or "").lower().strip()
     if key in _TIKTOKEN_CACHE:
         return _TIKTOKEN_CACHE[key]
-    try:
-        import tiktoken
-        if key:
-            try:
-                enc = tiktoken.encoding_for_model(key)
-                _TIKTOKEN_CACHE[key] = enc
-                return enc
-            except Exception:
-                pass
-        if "cl100k_base" not in _TIKTOKEN_CACHE:
-            _TIKTOKEN_CACHE["cl100k_base"] = tiktoken.get_encoding("cl100k_base")
+    if "cl100k_base" in _TIKTOKEN_CACHE:
         _TIKTOKEN_CACHE[key] = _TIKTOKEN_CACHE["cl100k_base"]
         return _TIKTOKEN_CACHE[key]
-    except Exception:
+    if _TIKTOKEN_ATTEMPTED:
+        return None
+
+    with _TIKTOKEN_LOCK:
+        # Re-check under the lock: a concurrent caller may have resolved it.
+        if key in _TIKTOKEN_CACHE:
+            return _TIKTOKEN_CACHE[key]
+        if "cl100k_base" in _TIKTOKEN_CACHE:
+            _TIKTOKEN_CACHE[key] = _TIKTOKEN_CACHE["cl100k_base"]
+            return _TIKTOKEN_CACHE[key]
+        if _TIKTOKEN_ATTEMPTED:
+            return None
+        _TIKTOKEN_ATTEMPTED = True
+
+        result: dict[str, Any] = {}
+
+        def worker() -> None:
+            try:
+                result["enc"] = _fetch_tiktoken_encoding(key)
+            except Exception:
+                result["enc"] = None
+
+        thread = threading.Thread(target=worker, daemon=True, name="tiktoken-fetch")
+        thread.start()
+        thread.join(_TIKTOKEN_FETCH_BUDGET_S)
+
+        enc = result.get("enc")
+        if enc is not None:
+            _TIKTOKEN_CACHE[key] = enc
+            if "cl100k_base" not in _TIKTOKEN_CACHE:
+                _TIKTOKEN_CACHE["cl100k_base"] = enc
+            return enc
         return None
 
 
