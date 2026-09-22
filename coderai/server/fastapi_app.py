@@ -46,6 +46,22 @@ def create_app() -> FastAPI:
         response.headers["Expires"] = "0"
         return response
 
+    @app.middleware("http")
+    async def auth_gate(request: Request, call_next):
+        """Enforce the access-token boundary on /api/* (same policy as web_app):
+        loopback/test clients pass, any other client must present the token.
+        The interactive endpoints that need the token to be absent (none) are
+        unaffected; static assets are not gated."""
+        if request.url.path.startswith("/api/"):
+            host = request.client.host if request.client else ""
+            if not web_app.check_auth(host, dict(request.headers), dict(request.query_params)):
+                return JSONResponse(
+                    {"error": "unauthorized",
+                     "message": "remote access requires the CoderAI token"},
+                    status_code=401,
+                    headers={"WWW-Authenticate": "Bearer"})
+        return await call_next(request)
+
     static_dir = Path(web_app.STATIC_DIR).resolve()
     static_dir.mkdir(exist_ok=True)
 
@@ -496,6 +512,10 @@ def create_app() -> FastAPI:
         new_hash = web_app._git_manager().revert_to(commit_hash)
         return {"ok": True, "commit": new_hash, "git": web_app._git_snapshot()}
 
+    @app.get("/api/auth/status")
+    async def auth_status():
+        return web_app.auth_status_payload()
+
     @app.get("/api/approval")
     async def get_approval():
         return web_app.get_approval_state()
@@ -515,6 +535,42 @@ def create_app() -> FastAPI:
         from coderai.tools.tools import reject_pending, get_approval_state
         reject_pending(data.get("reason", ""), data.get("token"))
         return get_approval_state()
+
+    # --- Plan Mode (parity with web_app's /api/plans* adapter) -------------
+    # The plan_mode package dispatches on the path relative to the leading
+    # slash, so strip it before handing the path to dispatch_plan_request.
+
+    @app.get("/api/plans")
+    async def plans_list():
+        status, payload = web_app.dispatch_plan_request("GET", "api/plans", {})
+        return JSONResponse(payload, status_code=status)
+
+    @app.get("/api/plans/{plan_id}")
+    async def plans_get(plan_id: str):
+        status, payload = web_app.dispatch_plan_request("GET", f"api/plans/{plan_id}", {})
+        return JSONResponse(payload, status_code=status)
+
+    @app.post("/api/plans")
+    async def plans_start(request: Request):
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        status, payload = web_app.dispatch_plan_request("POST", "api/plans", data)
+        return JSONResponse(payload, status_code=status)
+
+    @app.post("/api/plans/{plan_id}/{action}")
+    async def plans_action(plan_id: str, action: str, request: Request):
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        status, payload = web_app.dispatch_plan_request("POST", f"api/plans/{plan_id}/{action}", data)
+        return JSONResponse(payload, status_code=status)
 
     @app.get("/api/policies")
     async def get_policies(workspace_path: str = ""):
@@ -759,8 +815,24 @@ def create_app() -> FastAPI:
     # ══════════════════════════════════════════════════════════════════════════════
     # ── WebSocket Real-Time Chat & Thinking Logs
     # ══════════════════════════════════════════════════════════════════════════════
+    async def _ws_auth_ok(websocket: WebSocket) -> bool:
+        """Token boundary for WebSockets (the HTTP middleware can't see these).
+        Loopback/test sockets are trusted; others must present the token as a
+        ?token= query param (a WS client cannot set the Authorization header).
+        Returns True if the socket may be accepted."""
+        host = websocket.client.host if websocket.client else ""
+        if web_app.check_auth(host, {}, dict(websocket.query_params)):
+            return True
+        try:
+            await websocket.close(code=1008)  # policy violation
+        except Exception:
+            pass
+        return False
+
     @app.websocket("/ws/chat")
     async def websocket_chat(websocket: WebSocket):
+        if not await _ws_auth_ok(websocket):
+            return
         await websocket.accept()
         loop = asyncio.get_running_loop()
 

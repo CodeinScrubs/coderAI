@@ -35,6 +35,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hostname kept for `Host`/TLS), and each 30x target is re-checked against the
   policy before it is followed.
 
+### Added
+
+- **A network access layer: an access token + loopback guard.** The server's only
+  protection was the default `127.0.0.1` bind. Now there are two independent
+  boundaries. A **loopback-only guard** (`WEB_APP_LOOPBACK_ONLY`, default `true`)
+  refuses any non-local HTTP/WebSocket client. An **access token**
+  (`CODERAI_AUTH_TOKEN`) gates non-loopback clients: they must present it
+  (`Authorization: Bearer <token>` for HTTP, `?token=<token>` for WebSockets) or
+  be refused; loopback clients never need it, so the local single-machine flow is
+  unchanged. With no token configured, one is generated at boot and printed once,
+  and the UI surfaces it under **Settings → Remote access** (and accepts a
+  `?token=` in the page URL). The interactive terminal WebSocket keeps its own
+  tighter loopback-only guard on top of this.
+
+### Fixed
+
+- **The default (FastAPI) server now exposes `/api/plans*`.** Plan Mode (the
+  1.3.0 feature) was only wired into the stdlib `web_app`; `fastapi_app` — the
+  server that actually starts — had no `/api/plans` routes, so the feature was
+  unreachable on the default server. It is now served with the same
+  list/get/start/action/404 behavior as the stdlib adapter.
+- **`terminal_manager.py` now imports the `Any` it annotates with.** Three type
+  hints referenced `Any` without importing it — it only failed to raise because
+  of `from __future__ import annotations`, but the name was still undefined at
+  runtime.
+
+### Improved
+
+- **Test collection and app boot are ~15× faster.** `web_app` imported `litellm`
+  at module load, which pulls in the openai/azure/anthropic SDKs and a tiktoken
+  model download (~100s). That ran on every `pytest` collection and every boot.
+  The import is now deferred to a background daemon thread started at boot; until
+  it finishes, token counting uses the fast char-based estimator (the exact
+  counter is picked up automatically once warm). Collection dropped from ~115s to
+  ~4s, and the server now comes up instantly instead of blocking on the SDK load.
+
 ## [1.4.1] - 2026-09-16
 
 ### Fixed
