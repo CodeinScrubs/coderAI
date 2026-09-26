@@ -89,6 +89,12 @@ excludes = [
     'pycountry',
     'openpyxl',
     'docx',
+    # The app uses no Qt; anaconda transitively has both bindings installed,
+    # which PyInstaller refuses to collect together. Exclude both.
+    'PyQt5',
+    'PyQt6',
+    'PySide2',
+    'PySide6',
 ]
 
 a = Analysis(
