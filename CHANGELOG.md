@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Response bodies are now read with a bounded buffer (P1-14).**
+  `tool_fetch_url`, `tool_test_api_endpoint`, and the Tavily call all did
+  `resp.read()` — the *entire* body into memory — before truncating the text
+  downstream. A large or malicious response could exhaust memory. They now
+  read in 64 KiB chunks through `_read_response_bounded`, stopping at
+  `CODERAI_MAX_RESPONSE_BYTES` (default 4 MiB); the HTTP-error path is capped
+  the same way.
+- **Hindsight bank ids no longer collide across workspaces (P1-15).**
+  `sanitize_bank_id` used only the leaf directory name, so two workspaces with
+  the same name (e.g. `…/foo/proj` and `…/bar/proj`) shared one memory bank —
+  and one project's facts would leak into the other's recall. The id now embeds
+  a short SHA-256 of the full resolved path alongside the readable leaf name;
+  it stays deterministic and stable per workspace. Note: existing Hindsight
+  banks under the old leaf-only ids are not migrated (a fresh bank is created
+  per workspace).
+
 - **`run_command` is now approval-gated and sandboxed, like `run_bash`.** It is
   the "verify my changes" shell tool, but it is the same capability class as
   `run_bash` — a host shell execution tool. It previously ran
