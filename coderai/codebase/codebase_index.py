@@ -846,6 +846,55 @@ class CodebaseIndex:
         return False
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ── Shared per-workspace instance cache (P1-16) ──────────────────────────────
+#
+# Constructing a CodebaseIndex is expensive: it resolves the embedding model
+# over a blocking Ollama round-trip, opens a chroma PersistentClient, and
+# initializes the sqlite schema. The agent tools and per-turn RAG context used
+# to build a fresh instance on every call, so a single turn paid that cost
+# several times (the "thinking…" stall). The index *data* lives on disk, so a
+# cached instance always reads fresh data; the TTL only bounds how long a
+# sticky *instance* state (e.g. a transient embedding-outage flag) can persist.
+# ══════════════════════════════════════════════════════════════════════════════
+
+import threading as _threading
+
+_CODE_INDEX_CACHE: "dict[str, tuple[float, CodebaseIndex]]" = {}
+_CODE_INDEX_CACHE_LOCK = _threading.Lock()
+_CODE_INDEX_CACHE_TTL_S = float(os.getenv("CODE_INDEX_CACHE_TTL_S", "120"))
+_CODE_INDEX_CACHE_MAX = 4
+
+
+def get_codebase_index(workspace_path: str | Path) -> CodebaseIndex:
+    """Return a shared ``CodebaseIndex`` for *workspace_path*, rebuilding it
+    only when none is cached for the workspace or the cached one has expired.
+
+    Reusing the handle avoids the per-call Ollama round-trip + chroma/sqlite
+    open. All index data is on disk, so reads are still up to date; only the
+    (rare) sticky instance state is bounded by the TTL.
+    """
+    key = str(Path(workspace_path).resolve())
+    now = time.monotonic()
+    with _CODE_INDEX_CACHE_LOCK:
+        entry = _CODE_INDEX_CACHE.get(key)
+        if entry is not None and now - entry[0] < _CODE_INDEX_CACHE_TTL_S:
+            return entry[1]
+        index = CodebaseIndex(workspace_path)
+        _CODE_INDEX_CACHE[key] = (now, index)
+        # Bound the cache: drop the oldest entry if we exceed the max.
+        while len(_CODE_INDEX_CACHE) > _CODE_INDEX_CACHE_MAX:
+            oldest = min(_CODE_INDEX_CACHE, key=lambda k: _CODE_INDEX_CACHE[k][0])
+            del _CODE_INDEX_CACHE[oldest]
+        return index
+
+
+def clear_codebase_index_cache() -> None:
+    """Drop all cached index instances (used by tests and on workspace reset)."""
+    with _CODE_INDEX_CACHE_LOCK:
+        _CODE_INDEX_CACHE.clear()
+
+
 class IncrementalIndexer:
     def __init__(self, index: CodebaseIndex):
         self.index = index

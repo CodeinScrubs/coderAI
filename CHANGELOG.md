@@ -63,6 +63,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Improved
 
+- **CodebaseIndex is now cached per workspace (P1-16).** Constructing a
+  `CodebaseIndex` is expensive: it resolves the embedding model over a blocking
+  Ollama round-trip (`/api/tags`), opens a chroma `PersistentClient`, and
+  initializes the sqlite schema. Every codebase tool call, the per-turn RAG
+  context, and the UI's `code_index` status each built a fresh instance, so a
+  single turn paid that cost several times — the "thinking…" stall. New
+  `get_codebase_index(workspace)` returns one shared instance per workspace for
+  a short TTL (`CODE_INDEX_CACHE_TTL_S`, default 120s; cache bounded to 4
+  entries). The index *data* lives on disk, so reads stay fresh; the TTL only
+  bounds how long a sticky instance state (a transient embedding-outage flag)
+  can persist. Index-maintenance paths (rebuild / sync / regenerate) still use
+  fresh instances: they run off the agent thread (so a shared chroma
+  `PersistentClient` would be opened by two threads) and re-embedding must not
+  be suppressed by a flag stuck on a read instance.
+
 - **Tool context now persists across turns (P1-13).** Previously only the user
   prompt and the final assistant text were kept in the persistent transcript, so
   every new turn rebuilt its context from scratch — the model re-read files and

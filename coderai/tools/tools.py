@@ -25,7 +25,7 @@ from datetime import datetime
 from typing import Callable
 
 from coderai.codebase.git_manager import GitManager
-from coderai.codebase.codebase_index import CodebaseIndex, IncrementalIndexer
+from coderai.codebase.codebase_index import CodebaseIndex, IncrementalIndexer, get_codebase_index
 from coderai.codebase.workspace_filter import iter_workspace_files, walk_workspace
 from coderai.tools.sandbox_runner import SandboxRunner
 from coderai.utils.approval_policy import policy_manager, is_dangerous_bash
@@ -137,6 +137,9 @@ def _kill_proc_tree(proc: subprocess.Popen) -> None:
 
 
 def _update_code_index(path: str, deleted: bool = False) -> None:
+    # Write/index path: uses a fresh instance (not the shared read cache) so a
+    # transient embedding outage sets the sticky _embedding_disabled flag on a
+    # throwaway instance, never the one read paths use.
     try:
         indexer = IncrementalIndexer(CodebaseIndex(get_workspace()))
         result = indexer.on_file_changed(path)
@@ -1997,7 +2000,7 @@ def tool_delete_file(path: str) -> str:
 
 def tool_search_codebase(query: str, top_k: int = 5) -> str:
     try:
-        index = CodebaseIndex(get_workspace())
+        index = get_codebase_index(get_workspace())
         hits = index.retrieve_relevant_code(query, top_k)
         if not hits:
             status = index.status()
@@ -2018,7 +2021,7 @@ def tool_search_codebase(query: str, top_k: int = 5) -> str:
 
 def tool_get_project_overview() -> str:
     try:
-        overview = CodebaseIndex(get_workspace()).get_project_overview()
+        overview = get_codebase_index(get_workspace()).get_project_overview()
         sections = ["# Project overview", overview["summary"]]
         if overview["key_files"]:
             sections.append("\n## Entry points and key files")
@@ -2031,7 +2034,7 @@ def tool_get_project_overview() -> str:
 
 def tool_get_related_files(path: str, depth: int = 1) -> str:
     try:
-        related = CodebaseIndex(get_workspace()).get_related_files(path, max(1, min(int(depth), 3)))
+        related = get_codebase_index(get_workspace()).get_related_files(path, max(1, min(int(depth), 3)))
         if not related:
             return f"No resolved import or call relations found for: {path}"
         sections = [f"# Files related to `{path}`"]
