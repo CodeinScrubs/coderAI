@@ -16,9 +16,33 @@ from coderai.tools.tools import (
 
 
 def test_sanitize_bank_id():
-    assert sanitize_bank_id("E:\\llm_projects\\my-project") == "ws_my-project"
-    assert sanitize_bank_id("/home/user/code/AwesomeApp") == "ws_awesomeapp"
+    # The id keeps the leaf (readable) + a short hash of the full path
+    # (disambiguates workspaces that share a leaf name — P1-15).
     assert sanitize_bank_id(None) == "default-workspace"
+    bid = sanitize_bank_id("/home/user/code/AwesomeApp")
+    assert bid.startswith("ws_awesomeapp_")
+    assert len(bid) == len("ws_awesomeapp_") + 8
+
+
+def test_sanitize_bank_id_full_path_disambiguates(tmp_path):
+    # Two workspaces with the same leaf name must NOT share a bank.
+    a = tmp_path / "foo" / "proj"
+    b = tmp_path / "bar" / "proj"
+    a.mkdir(parents=True)
+    b.mkdir(parents=True)
+    assert sanitize_bank_id(a) != sanitize_bank_id(b)
+
+
+def test_sanitize_bank_id_stable_and_deterministic(tmp_path):
+    p = tmp_path / "my-project"
+    p.mkdir()
+    # Same path -> same id (stable across calls).
+    assert sanitize_bank_id(p) == sanitize_bank_id(str(p))
+    assert sanitize_bank_id(p) == sanitize_bank_id(p)
+    # A different path -> a different id.
+    q = tmp_path / "other"
+    q.mkdir()
+    assert sanitize_bank_id(p) != sanitize_bank_id(q)
 
 
 def test_hindsight_manager_offline_fallback(tmp_path, monkeypatch):

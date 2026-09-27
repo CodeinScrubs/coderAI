@@ -8,6 +8,7 @@ internal MemoryManager/SQLite when Hindsight is offline.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -30,13 +31,20 @@ except ImportError:
 
 
 def sanitize_bank_id(workspace_path: str | Path | None) -> str:
-    """Generate a clean, deterministic bank_id for a workspace path."""
+    """Generate a clean, deterministic bank_id for a workspace path.
+
+    The id embeds a short hash of the *full resolved* path, so two workspaces
+    that share a leaf name (e.g. ``…/a/proj`` and ``…/b/proj``) get distinct
+    banks instead of colliding on the leaf alone (P1-15). The leaf is kept up
+    front for readability; the hash is what disambiguates.
+    """
     if not workspace_path:
         return "default-workspace"
     p = Path(workspace_path).resolve()
     name = p.name or "root"
-    cleaned = re.sub(r"[^a-zA-Z0-9_\-]", "_", name).lower()
-    return f"ws_{cleaned}"[:48]
+    cleaned = re.sub(r"[^a-zA-Z0-9_\-]", "_", name).lower()[:32]
+    digest = hashlib.sha256(str(p).encode("utf-8")).hexdigest()[:8]
+    return f"ws_{cleaned}_{digest}"
 
 
 class HindsightMemoryManager:

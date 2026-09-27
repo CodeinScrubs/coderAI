@@ -99,7 +99,8 @@ def tool_test_api_endpoint(url: str, method: str = "GET", headers: dict = None, 
     # pinned/redirect-validated fetcher as fetch_url.
     import json
     try:
-        from coderai.tools.tools import _ssrf_safe_fetch  # lazy: avoid circular import
+        # lazy: avoid circular import
+        from coderai.tools.tools import _ssrf_safe_fetch, _read_response_bounded
     except Exception as e:
         return f"Error: SSRF fetcher unavailable: {e}"
 
@@ -116,7 +117,7 @@ def tool_test_api_endpoint(url: str, method: str = "GET", headers: dict = None, 
         ) as response:
             status = response.status
             resp_headers = dict(response.headers)
-            body = response.read().decode("utf-8", errors="replace")
+            body = _read_response_bounded(response).decode("utf-8", errors="replace")
         return json.dumps({
             "status": status,
             "headers": resp_headers,

@@ -17,6 +17,7 @@ import pytest
 from coderai.tools.tools import (
     _SSRFPolicyRedirectHandler,
     _is_url_safe,
+    _read_response_bounded,
     _resolve_public_target,
     tool_fetch_url,
 )
@@ -217,3 +218,83 @@ def test_fetch_refuses_redirect_to_private_target(monkeypatch):
     assert "blocked" in out.lower() or "169.254.169.254" in out
     # The fetcher must never have opened a connection to the metadata host.
     assert "169.254.169.254" not in " ".join(opened_urls)
+
+
+# ── P1-14: bounded response-body reads ──────────────────────────────────────
+
+def _fake_response(data: bytes):
+    """Minimal file-like response exposing the read()/close() the tool uses."""
+    import io
+    class _Resp:
+        def __init__(self, data):
+            self._fp = io.BytesIO(data)
+            self.closed = False
+        def read(self, *a):
+            return self._fp.read(*a)
+        def close(self):
+            self.closed = True
+    return _Resp(data)
+
+
+def test_read_response_bounded_caps_large_body():
+    # A 1 MiB body read with a small ceiling must never buffer the whole thing.
+    big = b"A" * (1024 * 1024)
+    out = _read_response_bounded(_fake_response(big), max_bytes=1024)
+    assert len(out) == 1024
+    assert out == b"A" * 1024
+
+
+def test_read_response_bounded_short_body_returned_whole():
+    small = b"hello world"
+    assert _read_response_bounded(_fake_response(small), max_bytes=1024) == b"hello world"
+
+
+def test_read_response_bounded_stops_early_does_not_consume_all(monkeypatch):
+    # The point of the cap: stop reading once the ceiling is hit, so a huge
+    # stream is not drained into memory. Track how many read() calls the
+    # source makes and that we stopped well before exhausting it.
+    import io
+    class _Counting:
+        def __init__(self, data):
+            self._fp = io.BytesIO(data)
+            self.calls = 0
+        def read(self, size=None):
+            self.calls += 1
+            return self._fp.read(size)
+    src = _Counting(b"B" * (1024 * 1024))  # 1 MiB
+    out = _read_response_bounded(src, max_bytes=128 * 1024)  # cap at 128 KiB
+    assert len(out) == 128 * 1024
+    # We stopped after reading the 128 KiB cap, not the full 1 MiB.
+    assert src.calls < (1024 * 1024) // (64 * 1024) + 1
+
+
+def test_fetch_url_caps_body_in_memory(monkeypatch):
+    # End-to-end: fetch_url must cap the bytes it pulls into memory, even for a
+    # very large body, and still return a (text) truncated result.
+    import email.message
+    import io
+    m = email.message.Message()
+    m["Content-Type"] = "text/plain; charset=utf-8"
+
+    class _BigResp:
+        status = 200
+        headers = m
+        def __init__(self):
+            self._fp = io.BytesIO(b"C" * (1024 * 1024))
+            self.closed = False
+        def read(self, size=None):
+            return self._fp.read(size)
+        def close(self):
+            self.closed = True
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            self.close()
+
+    monkeypatch.setattr("coderai.tools.tools._ssrf_safe_fetch",
+                        lambda url, headers=None, timeout=None: _BigResp())
+    out = tool_fetch_url("http://big.example/")
+    assert "Error" not in out
+    assert "truncated" in out.lower()
+    # The returned text is capped by max_chars (default 4000), not the 1 MiB.
+    assert len(out) < 5000

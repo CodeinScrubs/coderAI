@@ -31,6 +31,11 @@ from coderai.tools.sandbox_runner import SandboxRunner
 from coderai.utils.approval_policy import policy_manager, is_dangerous_bash
 
 MAX_OUTPUT_CHARS = 8_000
+# Hard ceiling on how many bytes of a network response body we read into
+# memory (P1-14). Bodies are truncated downstream anyway (fetch caps at a few
+# KB of text, tavily/endpoint tests snippet a few KB), so an uncapped
+# resp.read() could OOM on a large/malicious response.
+MAX_RESPONSE_BYTES = int(os.getenv("CODERAI_MAX_RESPONSE_BYTES", str(4 * 1024 * 1024)))
 EXEC_TIMEOUT     = 15
 TAVILY_ENABLED = os.getenv("TAVILY_ENABLED", "false").lower() == "true"
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
@@ -1226,9 +1231,9 @@ def _tavily_post(endpoint: str, payload: dict) -> dict:
         )
         try:
             with urllib.request.urlopen(req, timeout=20) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                return json.loads(_read_response_bounded(resp).decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
+            detail = exc.read(MAX_RESPONSE_BYTES).decode("utf-8", errors="replace")
             errors.append(f"HTTP {exc.code}: {detail[:600]}")
         except Exception as exc:
             errors.append(str(exc))
@@ -1748,11 +1753,28 @@ def _ssrf_safe_fetch(url: str, method: str = "GET", data: bytes | None = None,
     raise ValueError(f"Too many redirects (>{max_redirects}) for {url}")
 
 
+def _read_response_bounded(resp, max_bytes: int = MAX_RESPONSE_BYTES) -> bytes:
+    """Read a response body, never buffering more than *max_bytes* into memory
+    (P1-14). Reads in 64 KiB chunks and stops once the ceiling is reached, so a
+    large or malicious response cannot exhaust memory before it is truncated.
+    The returned bytes are a prefix of the body (at most *max_bytes*)."""
+    limit = max(1, int(max_bytes))
+    chunks: list[bytes] = []
+    total = 0
+    while total < limit:
+        chunk = resp.read(min(64 * 1024, limit - total))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    return b"".join(chunks)
+
+
 def tool_fetch_url(url: str, max_chars: int = 4000) -> str:
     try:
         default_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         with _ssrf_safe_fetch(url, headers=default_headers, timeout=10) as resp:
-            raw = resp.read()
+            raw = _read_response_bounded(resp)
             enc = resp.headers.get_content_charset() or "utf-8"
         text = raw.decode(enc, errors="replace")
         if len(text) > max_chars:
