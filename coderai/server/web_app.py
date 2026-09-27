@@ -1100,7 +1100,13 @@ def _compact_memory_if_needed() -> None:
     keep_tail = MAX_KEPT_HISTORY_MESSAGES
     to_summarize = messages[:-keep_tail]
     tail = messages[-keep_tail:]
-    removed_assistants = sum(1 for message in to_summarize if message.get("role") == "assistant")
+    # tools_log has one entry per *final* assistant message per turn; the
+    # assistant tool_calls messages (persisted for model context) are not
+    # turns, so they must not be counted here or the logs drift.
+    removed_assistants = sum(
+        1 for message in to_summarize
+        if message.get("role") == "assistant" and not message.get("tool_calls")
+    )
     existing = STATE.get("memory_summary", "").strip()
     
     print(f"Auto-compacting {len(to_summarize)} messages... (Total chars: {total_chars})")
@@ -1160,7 +1166,10 @@ def _message_for_context(message: dict) -> dict:
     role = message.get("role", "user")
     content = message.get("content", "")
     if role == "tool":
-        return {"role": "tool", "name": message.get("name"), "content": compact_tool_output(content, max_chars=3500)}
+        out = {"role": "tool", "name": message.get("name"), "content": compact_tool_output(content, max_chars=3500)}
+        if message.get("tool_call_id"):
+            out["tool_call_id"] = message["tool_call_id"]
+        return out
     limit = MAX_ASSISTANT_HISTORY_CHARS if role == "assistant" else MAX_HISTORY_MESSAGE_CHARS
     msg = {"role": role, "content": _clip_for_context(content, limit)}
     if "tool_calls" in message:
@@ -1257,13 +1266,33 @@ def _build_api_messages(final_system: str, compact: bool = True) -> list[dict]:
     used = 0
 
     recent = STATE["messages"][-MAX_KEPT_HISTORY_MESSAGES:]
+    # The window may begin mid-exchange (an assistant tool_calls message and
+    # its tool results are now persisted as separate messages). Tool messages
+    # without their assistant tool_calls message are invalid for strict APIs,
+    # so drop leading orphans.
+    while recent and recent[0].get("role") == "tool":
+        recent = recent[1:]
     compacted_recent = compact_history_assistant_turns(recent, keep_recent_assistant_code=1)
-    for message in reversed(compacted_recent):
-        compact = _message_for_context(message)
-        size = len(compact["content"]) + 32
+    # Group each assistant tool_calls message with the tool results that
+    # follow it, so the budget loop never selects half an exchange (a call
+    # without its response, or a response without its call) — strict APIs
+    # reject those.
+    units: list[list[dict]] = []
+    in_exchange = False
+    for message in compacted_recent:
+        if in_exchange and message.get("role") == "tool":
+            units[-1].append(message)
+            continue
+        in_exchange = message.get("role") == "assistant" and bool(message.get("tool_calls"))
+        units.append([message])
+    for unit in reversed(units):
+        unit_compacted = [_message_for_context(message) for message in unit]
+        size = sum(len(message["content"]) + 32 for message in unit_compacted)
         if selected_reversed and used + size > budget:
             break
-        selected_reversed.append(compact)
+        # The final list is reversed once, so add the unit's messages in
+        # reverse order to keep them in their original relative order.
+        selected_reversed.extend(reversed(unit_compacted))
         used += size
 
     selected = list(reversed(selected_reversed))
@@ -2149,6 +2178,28 @@ def _update_generated_artifact(response_text: str, active_context: dict | None =
     return artifact
 
 
+def _persist_tool_history(messages: list[dict], response_text: str, turn_tool_calls: list[dict], turn_tools: list[dict]) -> None:
+    """Append this iteration's assistant tool-call message and each tool
+    result to the persistent transcript, so the next turn keeps the tool
+    context instead of re-reading everything (P1-13). Skipped when the
+    exchange is incomplete (cancelled mid-iteration) — a partial
+    assistant/tool_calls block would break strict APIs."""
+    if len(turn_tools) != len(turn_tool_calls):
+        return
+    messages.append({
+        "role": "assistant",
+        "content": response_text,
+        "tool_calls": _format_tool_calls_for_history(STATE["conn_mode"], turn_tool_calls),
+    })
+    for index, tc in enumerate(turn_tool_calls):
+        messages.append({
+            "role": "tool",
+            "name": tc["name"],
+            "content": turn_tools[index]["result"],
+            "tool_call_id": tc.get("id") or f"call_{index}",
+        })
+
+
 def _run_agent_loop(api_messages: list[dict]) -> tuple[str, str, list[dict]]:
     history = list(api_messages)
     response_text = ""
@@ -2162,6 +2213,7 @@ def _run_agent_loop(api_messages: list[dict]) -> tuple[str, str, list[dict]]:
         if result["tool_calls"]:
             if result["content"]:
                 response_text += result["content"]
+            turn_start = len(tools_done)
             history.append({
                 "role": "assistant",
                 "content": result["content"] or "",
@@ -2176,6 +2228,10 @@ def _run_agent_loop(api_messages: list[dict]) -> tuple[str, str, list[dict]]:
                 if STATE["conn_mode"] == MODE_CUSTOM:
                     tool_message["tool_call_id"] = tc.get("id") or f"call_{index}"
                 history.append(tool_message)
+            _persist_tool_history(
+                STATE["messages"], response_text,
+                result["tool_calls"], tools_done[turn_start:],
+            )
             continue
         response_text += result["content"]
         needs_continue = _hit_generation_limit(result) or _looks_incomplete_generation(response_text)
@@ -2311,7 +2367,7 @@ def _run_agent_stream(prompt: str, write_event, active_context: dict | None = No
             if result["tool_calls"]:
                 if result["content"]:
                     response_text += result["content"]
-
+                turn_start = len(tools_done)
                 history.append({
                     "role": "assistant",
                     "content": result["content"] or "",
@@ -2332,6 +2388,10 @@ def _run_agent_stream(prompt: str, write_event, active_context: dict | None = No
                     if STATE["conn_mode"] == MODE_CUSTOM:
                         tool_message["tool_call_id"] = tc.get("id") or f"call_{index}"
                     history.append(tool_message)
+                _persist_tool_history(
+                    STATE["messages"], response_text,
+                    result["tool_calls"], tools_done[turn_start:],
+                )
                 continue
 
             response_text += result["content"]

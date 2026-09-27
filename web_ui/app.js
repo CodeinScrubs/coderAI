@@ -1569,8 +1569,14 @@ function isRTL(text) {
 }
 
 function renderMessages() {
-  const messages = state.data?.messages || [];
+  const rawMessages = state.data?.messages || [];
   const toolsLog = state.data?.tools_log || [];
+  // Tool messages (and the assistant messages that carry tool_calls) are
+  // model context, not chat bubbles: the tool activity is rendered as
+  // expandable cards on the turn's final assistant message (via tools_log).
+  // Without this filter each tool result / mid-turn assistant note would
+  // appear as a standalone bubble in the conversation.
+  const messages = rawMessages.filter((m) => m.role !== "tool" && !m.tool_calls);
   $("messages").innerHTML = messages.map((msg, index) => {
     const assistantIndex = messages.slice(0, index + 1).filter((m) => m.role === "assistant").length - 1;
     const tools = msg.role === "assistant" && toolsLog[assistantIndex] ? toolsLog[assistantIndex] : [];
