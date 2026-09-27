@@ -63,6 +63,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Improved
 
+- **Tool context now persists across turns (P1-13).** Previously only the user
+  prompt and the final assistant text were kept in the persistent transcript, so
+  every new turn rebuilt its context from scratch — the model re-read files and
+  re-ran commands it had already seen in the previous turn. A completed tool
+  exchange (the assistant `tool_calls` message plus each tool result) is now
+  appended to the transcript as the model saw it, and the next turn's prompt is
+  built from it. Incomplete exchanges (cancelled mid-iteration) are not
+  persisted — a dangling `tool_calls` block is invalid for strict APIs. The
+  context builder groups each call with its responses so the token budget never
+  selects half an exchange, drops orphaned leading tool responses, and preserves
+  `tool_call_id` on re-read. The chat UI keeps rendering tool activity as
+  expandable cards on the turn's final message (tool messages and mid-turn
+  `tool_calls` notes are model context, not chat bubbles).
+
 - **Test collection and app boot are ~15× faster.** `web_app` imported `litellm`
   at module load, which pulls in the openai/azure/anthropic SDKs and a tiktoken
   model download (~100s). That ran on every `pytest` collection and every boot.
