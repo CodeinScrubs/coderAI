@@ -33,7 +33,7 @@ from coderai.memory.memory_manager import MemoryManager
 from coderai.memory.memory_graph import GraphMemoryStore
 from coderai.skills.skill_tracker import SkillTracker
 from coderai.skills.skill_router import SkillRouter
-from coderai.codebase.codebase_index import CodebaseIndex
+from coderai.codebase.codebase_index import CodebaseIndex, get_codebase_index
 from coderai.codebase.workspace_filter import iter_workspace_files
 from coderai.tools.terminal_manager import terminal_manager
 from coderai.memory.vector_store import EmbeddingModelManager
@@ -732,7 +732,7 @@ def _codebase_rag_context(query: str) -> str:
     try:
         # We still run a lightweight metadata-only or fast retrieval if we just want UI highlights, 
         # but for prompt context, we return an empty string to save tokens.
-        retrieval = CodebaseIndex(get_workspace()).retrieve_context(query, top_k=5)
+        retrieval = get_codebase_index(get_workspace()).retrieve_context(query, top_k=5)
         hits = retrieval["chunks"]
         STATE["code_rag_type"] = retrieval["query_type"]
         STATE["code_rag_hits"] = [
@@ -2534,7 +2534,7 @@ def _client_state(session_id: str | None = None) -> dict:
             "langchain_error": lc_runtime.error,
         },
         "git": _git_snapshot(),
-        "code_index": CodebaseIndex(get_workspace()).status(),
+        "code_index": get_codebase_index(get_workspace()).status(),
         "code_rag_hits": st.get("code_rag_hits", []),
         "code_rag_type": st.get("code_rag_type", ""),
         "context_usage": _context_usage_snapshot(),
@@ -2629,14 +2629,14 @@ class Handler(BaseHTTPRequestHandler):
             _send_json(self, _graph_memory_store().search(q))
             return
         if path == "/api/index":
-            _send_json(self, CodebaseIndex(get_workspace()).status(check_freshness=True))
+            _send_json(self, get_codebase_index(get_workspace()).status(check_freshness=True))
             return
         if path == "/api/index/overview":
-            index = CodebaseIndex(get_workspace())
+            index = get_codebase_index(get_workspace())
             _send_json(self, {"overview": index.get_project_overview(), "graph": index.dependency_tree()})
             return
         if path in ("/api/index/graph", "/api/graph/structure"):
-            index = CodebaseIndex(get_workspace())
+            index = get_codebase_index(get_workspace())
             _send_json(self, index.get_schematic_graph())
             return
         if path == "/api/graph/graphify.html":

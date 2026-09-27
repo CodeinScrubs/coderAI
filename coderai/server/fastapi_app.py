@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 
 from coderai.server import web_app
-from coderai.codebase.codebase_index import CodebaseIndex
+from coderai.codebase.codebase_index import CodebaseIndex, get_codebase_index
 from coderai.codebase.code_graph_service import code_graph_service
 from coderai.tools.terminal_manager import terminal_manager
 from coderai.tools.tools import cancel_current_execution, get_workspace, set_workspace
@@ -154,7 +154,7 @@ def create_app() -> FastAPI:
     @app.get("/api/index/graph")
     @app.get("/api/graph/structure")
     async def get_schematic_graph():
-        index = CodebaseIndex(web_app.get_workspace())
+        index = get_codebase_index(web_app.get_workspace())
         return index.get_schematic_graph()
 
     @app.get("/api/memory/graph/stats")
@@ -666,11 +666,11 @@ def create_app() -> FastAPI:
 
     @app.get("/api/index")
     async def get_index():
-        return web_app.CodebaseIndex(web_app.get_workspace()).status(check_freshness=True)
+        return get_codebase_index(web_app.get_workspace()).status(check_freshness=True)
 
     @app.get("/api/index/overview")
     async def get_index_overview():
-        index = web_app.CodebaseIndex(web_app.get_workspace())
+        index = get_codebase_index(web_app.get_workspace())
         return {"overview": index.get_project_overview(), "graph": index.dependency_tree()}
 
     @app.post("/api/index/sync")
